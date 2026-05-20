@@ -1104,6 +1104,32 @@ class Browser:
 
     # ==================== Lifecycle ====================
 
+    @staticmethod
+    def _ensure_pdf_download_preference(user_data_dir: Path) -> None:
+        """Set plugins.always_open_pdf_externally=true in Chrome's Preferences.
+
+        --disable-features=ChromePDF has no effect in Chromium 87+ because the
+        PDF viewer is a compiled-in extension, not a togglable feature flag.
+        Writing this preference before launch is the only reliable way to force
+        PDFs to download instead of opening in the built-in viewer.
+        """
+        prefs_path = user_data_dir / "Default" / "Preferences"
+        prefs_path.parent.mkdir(parents=True, exist_ok=True)
+        prefs: dict = {}
+        if prefs_path.exists():
+            try:
+                with prefs_path.open("r", encoding="utf-8") as f:
+                    prefs = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                prefs = {}
+        if not isinstance(prefs.get("plugins"), dict):
+            prefs["plugins"] = {}
+        if not prefs["plugins"].get("always_open_pdf_externally"):
+            prefs["plugins"]["always_open_pdf_externally"] = True
+            with prefs_path.open("w", encoding="utf-8") as f:
+                json.dump(prefs, f, separators=(",", ":"))
+            logger.info(f"[_start] Set plugins.always_open_pdf_externally in {prefs_path}")
+
     async def _set_cdp_download_behavior(
         self,
         behavior: str,
@@ -1679,6 +1705,8 @@ class Browser:
                 # Mode 1: Persistent context (clear_user_data=False)
                 logger.info("Using persistent context mode")
                 persistent_options = self._get_persistent_context_options()
+                # Write the PDF-download preference before Chrome reads the profile.
+                self._ensure_pdf_download_preference(Path(persistent_options["user_data_dir"]))
                 logger.debug(f"Persistent context options: {persistent_options}")
                 _write_launch_debug_log(persistent_options, mode="persistent_context")
                 self._context = await _retriable_launch(

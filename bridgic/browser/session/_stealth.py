@@ -741,6 +741,9 @@ CHROME_DISABLED_COMPONENTS: List[str] = [
     "InfiniteSessionRestore",
     "ExtensionDisableUnsupportedDeveloper",
     "ExtensionManifestV2Unsupported",
+    # Disable the built-in PDF viewer so PDF links trigger a file download instead
+    # of opening an in-browser viewer that the agent cannot interact with.
+    "ChromePDF",
 ]
 
 # ========== Chrome Default Args (browser-use/profile.py:118-186) ==========
@@ -854,6 +857,7 @@ CHROME_DISABLED_COMPONENTS_HEADED: List[str] = [
     # JS can detect its absence via page lifecycle events. Agent code should handle
     # bfcache restore correctly (re-run get_snapshot after navigation) rather than
     # disabling the feature.
+    "ChromePDF",  # disable built-in PDF viewer so PDFs download instead of opening in-browser
 ]
 
 # ========== Chrome Ignore Default Args (browser-use/profile.py:390-396) ==========
