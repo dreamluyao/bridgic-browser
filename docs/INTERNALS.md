@@ -514,6 +514,27 @@ const _bridgicWorkerWrapSafe = (scriptURL) => {
 
 ---
 
+## PDF Behavior
+
+### PDF viewer disabled
+
+Before `launch_persistent_context` is called, `Browser._ensure_pdf_download_preference(user_data_dir)` writes `plugins.always_open_pdf_externally: true` into `<user_data_dir>/Default/Preferences`. Chrome reads this at startup and routes PDF navigations to the download handler instead of the built-in viewer.
+
+`--disable-features=ChromePDF` is also added to both `CHROME_DISABLED_COMPONENTS` and `CHROME_DISABLED_COMPONENTS_HEADED` in `_stealth.py` as belt-and-suspenders, but has no effect in Chromium 87+ (the PDF viewer is a compiled-in extension, not a feature flag). The Preferences write is the authoritative mechanism.
+
+### window.print() interception
+
+`Browser._setup_print_intercept(context)` is called in `_start()` for all launch modes (CDP, persistent, ephemeral), after context creation:
+
+1. `context.expose_binding("__bridgicPrint__", self._handle_print_trigger)` — exposes an async Python handler callable from JS.
+2. `context.add_init_script(...)` — overrides `window.print` to call `window.__bridgicPrint__()`, gated to `window === window.top` so cross-origin challenge iframes (Cloudflare Turnstile etc.) keep their native `window.print`.
+
+`_handle_print_trigger` receives the Playwright `source` dict (contains `page`), calls `page.pdf(path=...)`, and appends a `DownloadedFile` with `file_type="pdf"` to `self._download_manager._downloaded_files` so agents find it via `browser.downloaded_files`.
+
+Save path: `self._downloads_path / "print-<timestamp>.pdf"` if `downloads_path` is set; a `tempfile.mkstemp` path otherwise.
+
+**Iframe-safety**: `add_init_script` runs in all frames including cross-origin iframes. The `window === window.top` guard means the override only activates in the main frame. The `__bridgicPrint__` binding itself is injected into all frames by Playwright, but this is harmless — Cloudflare Turnstile does not probe for extra global functions.
+
 ## CLI Architecture — Detailed Implementation
 
 ### Client (`_client.py`)

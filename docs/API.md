@@ -56,6 +56,31 @@ bridgic has two download pipelines, picked by mode. The download path resolution
 
 In CDP-borrowed mode bridgic sends `Browser.setDownloadBehavior(allowAndName, downloadPath=<path>, eventsEnabled=true)` over a **page-level CDP session** attached to bridgic's tab (the only CDP form that bypasses Chrome's "Ask where to save each file" preference in Chrome 138+). Chrome saves files as `<path>/<guid>`; `CdpDownloadRenamer` subscribes to `Browser.downloadWillBegin/downloadProgress` on the same session and renames `<guid>` → real filename on completion. See [CLAUDE.md → Downloads](../CLAUDE.md#downloads) for the full design, including alternatives tried.
 
+## PDF behavior
+
+### PDF link downloads (always-on)
+
+Chrome's built-in PDF viewer is disabled before launch via `plugins.always_open_pdf_externally: true` in the Chrome Preferences file. Clicking any PDF link triggers a file download instead of opening the in-browser viewer. Works across all launch modes (persistent, ephemeral, CDP-owned, CDP-borrowed) and is tracked via the normal download pipeline.
+
+### Print interception (always-on)
+
+`window.print()` calls from the top frame are intercepted via `context.expose_binding` + `context.add_init_script`. When triggered, `page.pdf()` is called and the result is appended to `browser.downloaded_files` with `file_type="pdf"`:
+
+```python
+page = await browser.get_current_page()
+await page.evaluate("window.print()")  # intercepted — no dialog, no no-op
+await asyncio.sleep(2)
+
+for f in browser.downloaded_files:
+    if f.file_type == "pdf":
+        print(f.file_name, f.file_size)  # print-YYYYMMDD-HHMMSS.pdf  <bytes>
+```
+
+- **Headless**: `window.print()` is otherwise a silent no-op; the intercept gives it actual output.
+- **Headed**: the native print dialog is suppressed; the PDF is saved instead.
+- **Cross-origin iframes**: unaffected — the override is gated to `window === window.top`.
+- **Save path**: `downloads_path` directory if set; a temp file otherwise.
+
 ## Snapshot and state (see SNAPSHOT_AND_STATE.md)
 
 - **SnapshotOptions**: `interactive`, `full_page`.

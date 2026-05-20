@@ -694,6 +694,11 @@ config = StealthConfig(
 browser = Browser(stealth=config, headless=False)
 ```
 
+#### PDF 与打印处理
+
+- **PDF 链接自动下载**（始终开启）：启动前已禁用 Chrome 内置 PDF 查看器。点击任意 PDF 链接将触发文件下载并保留原始文件名，而不会在浏览器内打开智能体无法操作的查看器。
+- **`window.print()` 拦截**（始终开启）：主框架中的 `window.print()` 调用会被拦截并转为 `page.pdf()` 文档，自动追加到 `browser.downloaded_files`。打印对话框永远不会阻塞智能体 —— 有头模式下对话框被屏蔽，无头模式下原本静默的无操作现在会产生实际输出。
+
 #### 下载
 
 bridgic 在所有模式下都保留原始文件名、屏蔽"另存为"对话框,API 一致。内部有两条流水线 —— 非 CDP / CDP-owned 用 `DownloadManager`,CDP-borrowed 用 `CdpDownloadRenamer`(通过 page-level CDP session 下发 `setDownloadBehavior(allowAndName)`)。完整设计见 [CLAUDE.md → Downloads](CLAUDE.md#downloads)。

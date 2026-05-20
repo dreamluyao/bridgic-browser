@@ -157,6 +157,8 @@ For how to enable CDP on the target Chrome (Chrome 144+ `chrome://inspect/#remot
 - `take_screenshot(filename="path.png")` writes file and returns a status string.
 - `verify_element_visible` uses `(role, accessible_name)` rather than ref.
 - `start_video` must run before `stop_video`; `stop_video` stops the recorder and saves the `.webm` file immediately — no page close is needed.
+- **PDF links download automatically**: the built-in PDF viewer is disabled. Clicking a PDF link triggers a file download tracked in `browser.downloaded_files` instead of opening an in-browser viewer.
+- **`window.print()` is intercepted**: calling `window.print()` (or any page script that calls it) never opens a print dialog. The result is saved as `print-YYYYMMDD-HHMMSS.pdf` in `downloads_path` (or a temp file if unset) and appended to `browser.downloaded_files` with `file_type="pdf"`. Works in both headless (otherwise a silent no-op) and headed (otherwise a blocking dialog) modes.
 - **Multi-instance isolation**: use `user_data_dir` to give each `Browser` its own persistent profile. Internal paths (tmp, snapshot) are shared but collision-free (all filenames use `mkstemp` or timestamp+random). For full process-level isolation (separate config, logs, socket), set `BRIDGIC_HOME` env var before spawning a subprocess — see `env-vars.md`.
 
 ## SDK Error Handling

@@ -161,6 +161,8 @@ For how to enable CDP on the target Chrome (Chrome 144+ `chrome://inspect/#remot
 - **`eval-on` CODE must be an arrow or named function** that accepts the element as its argument:
   - `bridgic-browser eval-on @8d4b03a9 "(el) => el.textContent"` ✓
   - `bridgic-browser eval-on @8d4b03a9 "el.textContent"` ✗ (not a function)
+- **PDF links download automatically**: the built-in PDF viewer is disabled. Clicking a PDF link saves the file to `~/Downloads` (non-CDP) or the configured `downloads_path` — no in-browser viewer opens.
+- **`window.print()` is intercepted**: pages that call `window.print()` never show a print dialog. The output is silently saved as `print-YYYYMMDD-HHMMSS.pdf` in the configured `downloads_path` (or a temp file if unset). In headless mode, `window.print()` would otherwise be a silent no-op.
 
 ## When to Load Other References
 

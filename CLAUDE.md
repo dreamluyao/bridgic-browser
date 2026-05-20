@@ -164,6 +164,12 @@ agent-browser's `Some(session_id)` argument is the same trick — page-level CDP
 - **`last_close_artifacts()`** exposes a `rescued_downloads` list when L2 actually moved anything.
 - **"Show in Folder"** in Chrome's download bubble is broken whenever `setDownloadBehavior(allowAndName, eventsEnabled=true)` is active. This is a Chromium bug (`#324282051`) affecting all CDP-using tools. See [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
 
+#### PDF viewer and print interception
+
+**PDF viewer disabled (always-on):** `Browser._ensure_pdf_download_preference(user_data_dir)` writes `plugins.always_open_pdf_externally: true` to `<user_data_dir>/Default/Preferences` before `launch_persistent_context`. Clicking any PDF link now triggers a download through the normal pipeline rather than opening the built-in viewer. `--disable-features=ChromePDF` is also added to the disabled-features lists but has no practical effect in Chromium 87+ (the viewer is compiled-in). The Preferences write is the authoritative mechanism.
+
+**Print interception (always-on):** `Browser._setup_print_intercept(context)` is called for all launch modes in `_start()`. It wires `context.expose_binding("__bridgicPrint__", self._handle_print_trigger)` and an init script that replaces `window.print` with a call to that binding, gated to `window === window.top` so cross-origin iframes are unaffected. `_handle_print_trigger` calls `page.pdf()` and appends a `DownloadedFile(file_type="pdf")` to `_download_manager._downloaded_files`. Save path: `self._downloads_path / "print-<timestamp>.pdf"` if set, else `tempfile.mkstemp`. Works in both headless (where `window.print()` is otherwise a silent no-op) and headed (where it would open a blocking native dialog).
+
 ### Tool selection
 
 `BrowserToolSetBuilder` selects tools by category or name (combinable):

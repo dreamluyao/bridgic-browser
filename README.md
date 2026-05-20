@@ -700,6 +700,11 @@ config = StealthConfig(
 browser = Browser(stealth=config, headless=False)
 ```
 
+#### PDF and Print Handling
+
+- **PDF downloads** (always-on): Chrome's built-in PDF viewer is disabled before launch. Clicking any PDF link triggers a file download with the correct filename instead of opening an in-browser viewer the agent can't interact with.
+- **Print interception** (always-on): `window.print()` calls from the main frame are intercepted and converted to `page.pdf()` documents, automatically appended to `browser.downloaded_files`. No print dialog ever blocks the agent — in headed mode the dialog is suppressed, in headless mode the otherwise-silent no-op now produces output.
+
 #### Downloads
 
 bridgic preserves the original filename, suppresses the "Save As" dialog, and keeps the API the same across modes. Internally there are two pipelines — `DownloadManager` for non-CDP / CDP-owned, and `CdpDownloadRenamer` for CDP-borrowed (page-level CDP routing of `setDownloadBehavior(allowAndName)`). See [CLAUDE.md → Downloads](CLAUDE.md#downloads) for the full design.

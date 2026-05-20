@@ -196,6 +196,8 @@ These CLI behaviors have no direct SDK equivalent or work differently:
 | `fill-form` input format | JSON string on command line | Python list of dicts |
 | `take_screenshot` return value | CLI always writes to a file path | SDK: `filename=None` returns base64 data URL; `filename="path.png"` writes file |
 | Video file write timing | `video-stop` stops the recorder and saves the `.webm` file immediately | Same for SDK: `stop_video()` saves the file immediately — no page close needed |
+| PDF link click | File downloads to `~/Downloads` (non-CDP) or `downloads_path`; no viewer opens | Same — file appears in `browser.downloaded_files` |
+| `window.print()` triggered by page | Saved as `print-YYYYMMDD-HHMMSS.pdf` in `downloads_path` (or temp); no dialog | Same — file appears in `browser.downloaded_files` with `file_type="pdf"` |
 
 ## Practical Rule for Mixed Tasks
 
