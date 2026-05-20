@@ -1130,6 +1130,56 @@ class Browser:
                 json.dump(prefs, f, separators=(",", ":"))
             logger.info(f"[_start] Set plugins.always_open_pdf_externally in {prefs_path}")
 
+    async def _setup_print_intercept(self, context: "BrowserContext") -> None:
+        """Override window.print() to save the page as a PDF instead of showing a dialog.
+
+        In headless mode window.print() is a silent no-op; in headed mode it opens
+        a blocking native dialog. Either way the agent gets nothing useful. This
+        intercept captures the event and calls page.pdf() so the output lands in
+        downloaded_files just like any other download.
+
+        Gated to window.top so cross-origin challenge iframes (Cloudflare Turnstile
+        etc.) keep their native window.print and their global namespace is unchanged.
+        """
+        await context.expose_binding("__bridgicPrint__", self._handle_print_trigger)
+        await context.add_init_script(
+            "if (window === window.top) { window.print = () => window.__bridgicPrint__(); }"
+        )
+        logger.debug("[_setup_print_intercept] window.print() intercepted")
+
+    async def _handle_print_trigger(self, source: Dict[str, Any], *args: Any) -> None:
+        """Called from JS when window.print() fires; saves the page as a PDF."""
+        page = source.get("page")
+        if page is None:
+            logger.warning("[print_intercept] no page in binding source, skipping")
+            return
+
+        filename = f"print-{time.strftime('%Y%m%d-%H%M%S')}.pdf"
+        if self._downloads_path:
+            self._downloads_path.mkdir(parents=True, exist_ok=True)
+            save_path = self._downloads_path / filename
+        else:
+            fd, tmp = tempfile.mkstemp(suffix=".pdf", prefix="bridgic-print-")
+            os.close(fd)
+            save_path = Path(tmp)
+
+        try:
+            await page.pdf(path=str(save_path))
+            file_size = save_path.stat().st_size
+            logger.info(f"[print_intercept] saved print as PDF: {save_path} ({file_size} bytes)")
+            if self._download_manager is not None:
+                self._download_manager._downloaded_files.append(DownloadedFile(
+                    url=page.url,
+                    path=str(save_path),
+                    file_name=filename,
+                    file_size=file_size,
+                    file_type="pdf",
+                    mime_type="application/pdf",
+                    suggested_filename=filename,
+                ))
+        except Exception as exc:
+            logger.warning(f"[print_intercept] page.pdf() failed: {exc}")
+
     async def _set_cdp_download_behavior(
         self,
         behavior: str,
@@ -1698,6 +1748,7 @@ class Browser:
                 if self._download_manager and self._cdp_context_owned:
                     self._download_manager.attach_to_context(self._context)
 
+                await self._setup_print_intercept(self._context)
                 logger.info("Playwright started (mode=cdp, stealth_js=%s)", self.stealth_enabled)
                 return
 
@@ -1804,6 +1855,8 @@ class Browser:
                 logger.info(
                     f"Download manager attached, saving to: {self._download_manager.downloads_path}"
                 )
+
+            await self._setup_print_intercept(self._context)
 
             logger.info(
                 f"Playwright started (persistent_context={self.use_persistent_context}, "
