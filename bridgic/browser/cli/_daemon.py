@@ -96,6 +96,25 @@ def _is_browser_closed_error(exc: BaseException) -> bool:
     return False
 
 
+def _is_browser_actually_alive(browser: "Browser") -> bool:
+    """True when the underlying browser + context are still connected.
+
+    Distinguishes a dead TAB (a page-level TargetClosedError — e.g. a download
+    popup that called ``window.close()``; recoverable, the Browser self-heals
+    `self._page`) from a dead BROWSER/CONTEXT (the process is gone — requires a
+    restart / CDP reconnect). Used to avoid escalating a transient tab death to
+    a misleading ``BROWSER_CLOSED`` "restart the browser" response.
+    """
+    b = getattr(browser, "_browser", None)
+    ctx = getattr(browser, "_context", None)
+    try:
+        if b is not None and not b.is_connected():
+            return False
+    except Exception:
+        return False
+    return ctx is not None
+
+
 # Re-export the shared redaction helper under the legacy name so that the
 # CLI client (and any external code that imports from `_daemon`) keeps
 # working. The canonical definition lives in `bridgic.browser._redact`.
@@ -827,6 +846,15 @@ async def _dispatch_inner(browser: "Browser", command: str, args: Dict[str, Any]
 
     for _attempt in range(_max_attempts):
         try:
+            # Heal a dead active page (e.g. a followed download popup that
+            # self-closed via window.close()) before the handler touches
+            # self._page. Best-effort; the handler's own NO_ACTIVE_PAGE guard
+            # is the backstop. Inside the loop so a post-reconnect retry re-heals.
+            if command != "close":
+                try:
+                    await browser._ensure_live_page()
+                except Exception:
+                    pass
             result = await handler(browser, args)
             return _response(
                 success=True,
@@ -846,6 +874,21 @@ async def _dispatch_inner(browser: "Browser", command: str, args: Dict[str, Any]
                     await asyncio.sleep(_CDP_RECONNECT_BACKOFF_S)
                     if await _cdp_reconnect(browser):
                         continue  # retry the command with the refreshed connection
+                # A closed-target error while the browser + context are still
+                # connected means a dead TAB (e.g. a download popup that
+                # self-closed), not a dead browser. _ensure_live_page has
+                # already healed self._page; surface a retryable page-level
+                # error instead of the misleading "restart the browser" hint.
+                if _is_browser_actually_alive(browser):
+                    return _response(
+                        success=False,
+                        result=(
+                            "The active tab closed unexpectedly (e.g. a popup that "
+                            "finished a download). Retry the command."
+                        ),
+                        error_code="PAGE_CLOSED",
+                        meta={"retryable": True},
+                    )
                 return _response(
                     success=False,
                     result=_browser_closed_hint(cdp),
@@ -868,6 +911,17 @@ async def _dispatch_inner(browser: "Browser", command: str, args: Dict[str, Any]
                     await asyncio.sleep(_CDP_RECONNECT_BACKOFF_S)
                     if await _cdp_reconnect(browser):
                         continue  # retry
+                # Dead TAB vs dead browser — see the BridgicBrowserError arm.
+                if _is_browser_actually_alive(browser):
+                    return _response(
+                        success=False,
+                        result=(
+                            "The active tab closed unexpectedly (e.g. a popup that "
+                            "finished a download). Retry the command."
+                        ),
+                        error_code="PAGE_CLOSED",
+                        meta={"retryable": True},
+                    )
                 return _response(
                     success=False,
                     result=_browser_closed_hint(cdp),

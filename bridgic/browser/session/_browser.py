@@ -550,6 +550,12 @@ class Browser:
         # current page and the closed page's `opener()` is unavailable. Stale
         # entries are pruned by `_on_owned_page_close` when pages die.
         self._focus_stack: List[Page] = []
+        # Pages currently being closed by the explicit `_close_page` path.
+        # `page.close()` fires the `_on_owned_page_close` listener synchronously,
+        # which would otherwise race `_close_page`'s own fallback selection and
+        # double-swap the video/download handlers. `_close_page` adds the page
+        # here for the duration of `await page.close()` so the listener defers.
+        self._explicitly_closing: Set[Page] = set()
         # Constructor opt-in for popup follow behaviour. When True, a popup
         # whose `opener() is self._page` becomes the new `self._page`. Set to
         # False to keep `self._page` fixed (popups still join `_owned_pages`).
@@ -2906,16 +2912,114 @@ class Browser:
     def _on_owned_page_close(self, page: Page) -> None:
         """Page-close callback: prune `_owned_pages` and `_focus_stack`.
 
-        We intentionally do NOT touch ``self._page`` here even if it matches
-        the closed page. The explicit `_close_page` path is responsible for
-        choosing a fallback target — handling it twice (once via this listener
-        and once in `_close_page`) would cause double video/download swaps.
+        When the closed page is NOT the active page, or its closure was driven
+        by the explicit `_close_page` path (which installs its own successor),
+        we only prune bookkeeping — touching ``self._page`` would cause double
+        video/download swaps.
+
+        When the active page closes *on its own* (e.g. a followed download
+        popup that calls ``window.close()``), no `_close_page` runs, so without
+        self-healing here ``self._page`` would be left pointing at a dead Page.
+        A closed Page is still truthy, so the `if not self._page:` recovery
+        guards elsewhere never fire and the next operation raises
+        TargetClosedError. We schedule an async heal to install a fallback.
         """
         self._owned_pages.discard(page)
         try:
             self._focus_stack.remove(page)
         except ValueError:
             pass
+
+        if page is not self._page:
+            return  # not the active tab — pruning above is all that's needed.
+        if page in self._explicitly_closing:
+            return  # `_close_page` owns fallback selection for this close.
+        if self._closing:
+            return  # shutdown path nulls `_page` itself; don't fight it.
+        try:
+            asyncio.create_task(self._heal_self_page(page))
+        except RuntimeError:
+            # No running loop (shutdown / non-async test). Best-effort sync
+            # fallback: at minimum stop pointing at a dead page so the
+            # truthiness guards re-engage on the next operation.
+            self._page = None
+            self._invalidate_page_state()
+
+    async def _heal_self_page(self, closed_page: Page) -> None:
+        """Reassign `self._page` after the active page closed outside `_close_page`.
+
+        Reuses `_select_fallback_page` and mirrors the `is_current_page` branch
+        of `_close_page` for video/download migration. Unlike
+        `_switch_self_page_to`, it handles a ``None`` candidate (no surviving
+        owned page). Re-checks `_closing` / identity after every await so it
+        no-ops if a concurrent `_close_page` / `_switch_self_page_to` / `close()`
+        already moved off the dead page.
+        """
+        if self._closing or self._page is not closed_page:
+            return
+
+        candidate = await self._select_fallback_page(closed_page)
+
+        # Hand the single-stream video recorder over to the successor (or
+        # detach if none). The closed page's screencast is already dead.
+        if (
+            self._video_recorder is not None
+            and not self._video_recorder.is_stopped
+            and self._video_recorder.current_page == closed_page
+        ):
+            if candidate is not None and not candidate.is_closed():
+                try:
+                    await self._video_recorder.switch_page(candidate)
+                except Exception as e:
+                    logger.debug("[_heal_self_page] video switch error: %s", e)
+            else:
+                try:
+                    await self._video_recorder.detach_screencast()
+                except Exception as e:
+                    logger.debug("[_heal_self_page] video detach error: %s", e)
+
+        # CDP-borrowed mode attaches DownloadManager per-page; migrate handlers
+        # so downloads from the successor still land in bridgic's downloads_path.
+        if self._is_cdp_borrowed and self._download_manager and candidate is not None:
+            try:
+                self._download_manager.detach_from_page(closed_page)
+            except Exception:
+                pass
+            try:
+                self._download_manager.attach_to_page(candidate)
+            except Exception as e:
+                logger.debug("[_heal_self_page] download re-attach failed: %s", e)
+
+        if self._closing or self._page is not closed_page:
+            return
+        self._page = candidate
+        self._invalidate_page_state()
+        logger.info(
+            "[_heal_self_page] active page self-closed; healed self._page to %s",
+            "None" if candidate is None else "a surviving owned page",
+        )
+
+    async def _ensure_live_page(self) -> None:
+        """Replace `self._page` with a fallback if it points at a closed Page.
+
+        Deterministic, synchronously-awaited counterpart to the reactive
+        `_heal_self_page` task: it closes the race window between a popup
+        self-closing and the scheduled heal running. Idempotent vs the
+        reactive task (both call `_heal_self_page`, whose identity re-checks
+        make the second runner a no-op). Intended to be called once before a
+        command handler touches `self._page`.
+        """
+        if self._closing:
+            return
+        page = self._page
+        if page is None:
+            return
+        try:
+            if not page.is_closed():
+                return
+        except Exception:
+            return
+        await self._heal_self_page(page)
 
     def _on_new_page(self, page: Page) -> None:
         """Synchronous `context.on("page")` listener.
@@ -3192,7 +3296,15 @@ class Browser:
                 # No successor — stop screencast but keep ffmpeg alive for finalize.
                 await self._video_recorder.detach_screencast()
 
-        await page.close()
+        # Mark this as an explicit close so the `_on_owned_page_close` listener
+        # (fired synchronously by `page.close()`) defers fallback selection to
+        # us instead of scheduling its own `_heal_self_page` task. `finally` so
+        # a close error can't leak a stale entry.
+        self._explicitly_closing.add(page)
+        try:
+            await page.close()
+        finally:
+            self._explicitly_closing.discard(page)
 
         # Prune ownership / focus bookkeeping. The page.on("close") listener
         # registered by `_mark_owned` will also fire, but it can race with the

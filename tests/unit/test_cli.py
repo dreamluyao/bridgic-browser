@@ -1135,8 +1135,10 @@ class TestDaemonDispatch:
         assert "boom" in resp["result"]
 
     async def test_browser_closed_error_returns_hint(self):
-        """Playwright 'browser has been closed' errors surface the recovery hint."""
+        """Playwright 'browser has been closed' errors surface the recovery hint
+        when the browser is genuinely disconnected (not just a dead tab)."""
         browser = make_browser()
+        browser._browser.is_connected.return_value = False  # whole browser gone
         browser.navigate_to = AsyncMock(side_effect=Exception(
             "Page.goto: Target page, context or browser has been closed"
         ))
@@ -1146,6 +1148,21 @@ class TestDaemonDispatch:
         assert resp["error_code"] == "BROWSER_CLOSED"
         assert "bridgic-browser close" in resp["result"]
         assert "bridgic-browser open" in resp["result"]
+
+    async def test_closed_target_with_live_browser_is_page_closed_not_browser_closed(self):
+        """A closed-target error while browser + context are still connected is a
+        dead TAB (e.g. a download popup that self-closed) → retryable PAGE_CLOSED,
+        not the alarming BROWSER_CLOSED restart hint."""
+        browser = make_browser()
+        browser._browser.is_connected.return_value = True  # browser alive
+        browser._ensure_live_page = AsyncMock()
+        browser.navigate_to = AsyncMock(side_effect=Exception(
+            "Page.goto: Target page, context or browser has been closed"
+        ))
+        resp = await _dispatch(browser, "open", {"url": "x"})
+        assert resp["success"] is False
+        assert resp["error_code"] == "PAGE_CLOSED"
+        assert resp["meta"]["retryable"] is True
 
     async def test_dispatch_short_circuits_when_closing(self):
         """C2 regression guard: dispatches arriving after close() started must
@@ -2845,6 +2862,7 @@ class TestDispatchCdpReconnect:
 
     async def test_cdp_browser_closed_reconnect_success_retry_fails(self):
         browser = self._make_cdp_browser()
+        browser._browser.is_connected.return_value = False  # browser still dead after retry
         browser.navigate_to = AsyncMock(
             side_effect=RuntimeError("browser has been closed")
         )
@@ -2857,6 +2875,7 @@ class TestDispatchCdpReconnect:
 
     async def test_cdp_browser_closed_reconnect_fails(self):
         browser = self._make_cdp_browser()
+        browser._browser.is_connected.return_value = False  # reconnect failed → still dead
         browser.navigate_to = AsyncMock(
             side_effect=RuntimeError("browser has been closed")
         )
@@ -2869,6 +2888,7 @@ class TestDispatchCdpReconnect:
 
     async def test_cdp_close_command_no_reconnect(self):
         browser = self._make_cdp_browser()
+        browser._browser.is_connected.return_value = False  # browser gone during close
         browser.inspect_pending_close_artifacts = MagicMock(return_value={
             "session_dir": "/tmp/close-test", "trace": [], "video": [],
         })
@@ -2883,6 +2903,7 @@ class TestDispatchCdpReconnect:
 
     async def test_non_cdp_browser_closed_no_reconnect(self):
         browser = make_browser()  # _cdp_resolved = None
+        browser._browser.is_connected.return_value = False  # whole browser gone
         browser.navigate_to = AsyncMock(
             side_effect=RuntimeError("browser has been closed")
         )

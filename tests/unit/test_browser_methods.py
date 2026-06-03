@@ -95,6 +95,10 @@ def _make_browser_with_mock_page() -> tuple:
     # guard. In real init it defaults to False (set by Browser.__init__) but
     # `__new__` skips that path, so set it explicitly here.
     browser._closing = False
+    # Explicit-close exclusion set: `_close_page` adds pages here around
+    # `page.close()` so the on-close listener defers fallback selection.
+    # `__new__` skips Browser.__init__, so set it explicitly here.
+    browser._explicitly_closing = set()
     browser._context = MagicMock()
     browser._page = MagicMock()
     # Owned-page tracking: in non-CDP modes every page is owned. By default

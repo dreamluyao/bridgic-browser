@@ -319,6 +319,118 @@ async def test_cdp_popup_close_returns_to_opener(cdp_browser):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# I5b — a FOLLOWED popup that closes itself (outside _close_page) self-heals
+#        self._page. This is the download-popup regression: a popup that
+#        triggers a download and immediately calls window.close().
+# ─────────────────────────────────────────────────────────────────────────────
+
+LINK_SELF_CLOSING_POPUP = (
+    "data:text/html,<html><body>"
+    "<a id='lnk' target='_blank' "
+    "href=\"data:text/html,<script>window.close()</script>\">open</a>"
+    "</body></html>"
+)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_followed_popup_self_close_heals_self_page(cdp_browser):
+    """A popup that bridgic follows, then closes itself (NOT via `_close_page`),
+    must leave `self._page` on a live page — not a dead Page.
+
+    Deterministic exercise of the reactive heal: open an about:blank popup,
+    wait until `self._page` follows it, then close it externally via
+    `popup.close()` (a passive close, like `window.close()` — it does NOT go
+    through bridgic's `_close_page`). `_on_owned_page_close` must schedule
+    `_heal_self_page`, which restores `self._page` to the opener.
+    """
+    home = cdp_browser._page
+    await home.goto(LINK_TARGET_BLANK, wait_until="domcontentloaded")
+    async with cdp_browser._context.expect_page() as info:
+        await home.click("#lnk")
+    popup = await info.value
+    await popup.wait_for_load_state("domcontentloaded")
+
+    # Wait for adoption + follow so we're genuinely on the popup.
+    for _ in range(40):
+        if cdp_browser._page is popup:
+            break
+        await asyncio.sleep(0.05)
+    assert cdp_browser._page is popup, "precondition: popup followed"
+
+    # Passive close — bypasses `_close_page` entirely (mirrors window.close()).
+    await popup.close()
+
+    # The reactive heal task must restore a live page (the opener).
+    for _ in range(60):
+        if cdp_browser._page is not popup and cdp_browser._page is not None:
+            break
+        await asyncio.sleep(0.05)
+    assert cdp_browser._page is not popup, "self._page still points at dead popup"
+    assert cdp_browser._page is home, "opener fallback (tier 1) should select home"
+    assert not cdp_browser._page.is_closed()
+
+    # A subsequent operation must succeed (no TargetClosedError / BROWSER_CLOSED).
+    snap = await cdp_browser.get_snapshot_text()
+    assert isinstance(snap, str)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_self_closing_popup_link_end_to_end(cdp_browser):
+    """End-to-end realistic repro: click a link whose target runs
+    `window.close()` on load. Whether or not the popup is followed before it
+    dies, `self._page` must end up live and a snapshot must succeed."""
+    home = cdp_browser._page
+    await home.goto(LINK_SELF_CLOSING_POPUP, wait_until="domcontentloaded")
+    async with cdp_browser._context.expect_page() as info:
+        await home.click("#lnk")
+    popup = await info.value
+
+    # Allow adoption/follow + self-close + heal to settle.
+    for _ in range(60):
+        cur = cdp_browser._page
+        if cur is not None and cur is not popup and not cur.is_closed():
+            break
+        await asyncio.sleep(0.05)
+
+    assert cdp_browser._page is not None
+    assert cdp_browser._page is not popup
+    assert not cdp_browser._page.is_closed()
+    snap = await cdp_browser.get_snapshot_text()
+    assert isinstance(snap, str)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_ensure_live_page_recovers_dead_active_page(cdp_browser):
+    """`_ensure_live_page` deterministically heals a dead `self._page` even when
+    the reactive listener is suppressed (the race-window backstop)."""
+    home = cdp_browser._page
+    await cdp_browser.new_tab(url=None)
+    extra = cdp_browser._page
+    assert extra is not home and extra in cdp_browser._owned_pages
+
+    # Suppress the reactive heal by marking the page as explicitly-closing, so
+    # `_on_owned_page_close` defers — leaving `self._page` dangling on purpose.
+    cdp_browser._explicitly_closing.add(extra)
+    try:
+        await extra.close()
+    finally:
+        cdp_browser._explicitly_closing.discard(extra)
+
+    # self._page now points at a closed page (no reactive heal ran).
+    assert cdp_browser._page is extra
+    assert cdp_browser._page.is_closed()
+
+    # The defensive guard restores a live owned page.
+    await cdp_browser._ensure_live_page()
+    assert cdp_browser._page is not extra
+    assert cdp_browser._page is not None
+    assert not cdp_browser._page.is_closed()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # I6 — popup spawned by user tab is NOT adopted
 # ─────────────────────────────────────────────────────────────────────────────
 

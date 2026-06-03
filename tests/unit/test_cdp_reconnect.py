@@ -7,6 +7,7 @@ import pytest
 from bridgic.browser.cli._daemon import (
     _cdp_reconnect,
     _dispatch_inner,
+    _is_browser_actually_alive,
     _is_browser_closed_error,
 )
 
@@ -302,3 +303,70 @@ class TestDispatchDetectsPlaywrightClose:
 
         reconnect_mock.assert_awaited_once_with(browser)
         assert resp["success"] is True
+
+
+class TestDispatchDistinguishesDeadTabFromDeadBrowser:
+    """A closed-target error while the browser + context are still connected is
+    a dead TAB (e.g. a download popup that self-closed), not a dead browser. It
+    must surface as a retryable ``PAGE_CLOSED`` — never the alarming
+    ``BROWSER_CLOSED`` "restart the browser" response."""
+
+    @staticmethod
+    def _alive_browser() -> MagicMock:
+        browser = MagicMock()
+        browser._cdp_resolved = None  # local-launch mode → no reconnect retry
+        browser._closing = False
+        browser._reconnecting = False
+        browser._ensure_live_page = AsyncMock()
+        browser._browser = MagicMock()
+        browser._browser.is_connected.return_value = True
+        browser._context = MagicMock()
+        return browser
+
+    def test_helper_distinguishes_states(self):
+        alive = self._alive_browser()
+        assert _is_browser_actually_alive(alive) is True
+
+        dead_conn = self._alive_browser()
+        dead_conn._browser.is_connected.return_value = False
+        assert _is_browser_actually_alive(dead_conn) is False
+
+        no_ctx = self._alive_browser()
+        no_ctx._context = None
+        assert _is_browser_actually_alive(no_ctx) is False
+
+    @pytest.mark.asyncio
+    async def test_target_closed_with_live_browser_returns_page_closed(self):
+        from playwright._impl._errors import TargetClosedError
+
+        browser = self._alive_browser()
+        handler = AsyncMock(side_effect=TargetClosedError("Target page, context or browser has been closed"))
+
+        with patch.dict(
+            "bridgic.browser.cli._daemon._HANDLERS",
+            {"open": handler},
+            clear=False,
+        ):
+            resp = await _dispatch_inner(browser, "open", {"url": "https://x"})
+
+        assert resp["success"] is False
+        assert resp["error_code"] == "PAGE_CLOSED"
+        assert resp["meta"]["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_target_closed_with_dead_browser_returns_browser_closed(self):
+        from playwright._impl._errors import TargetClosedError
+
+        browser = self._alive_browser()
+        browser._browser.is_connected.return_value = False  # process is gone
+        handler = AsyncMock(side_effect=TargetClosedError("Target closed"))
+
+        with patch.dict(
+            "bridgic.browser.cli._daemon._HANDLERS",
+            {"open": handler},
+            clear=False,
+        ):
+            resp = await _dispatch_inner(browser, "open", {"url": "https://x"})
+
+        assert resp["success"] is False
+        assert resp["error_code"] == "BROWSER_CLOSED"
