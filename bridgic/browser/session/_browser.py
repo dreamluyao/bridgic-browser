@@ -5403,7 +5403,7 @@ Before you return the element ref, reason about the state and elements for a sen
             error_msg = f'Failed to input text to element {ref}: {e}'
             _raise_operation_error(error_msg)
 
-    async def click_element_by_ref(self, ref: str) -> str:
+    async def click_element_by_ref(self, ref: str, timeout_ms: Optional[int] = None) -> str:
         """Click an element identified by its snapshot ref.
 
         Prefer this over :meth:`mouse_click` for accessible elements — it uses
@@ -5424,6 +5424,18 @@ Before you return the element ref, reason about the state and elements for a sen
         ref : str
             Element ref from snapshot (e.g., "8d4b03a9"). Obtain refs by
             calling :meth:`get_snapshot_text` first.
+        timeout_ms : int, optional
+            Per-call ceiling for the underlying ``locator.click``. Playwright's
+            click auto-waits for any navigation the click triggers, so a click
+            on a control that kicks off a slow navigation (e.g. a form-submit
+            button against a known-slow endpoint) can hit the default ceiling
+            before the page commits. Raise this for those clicks. When ``None``
+            or ``0`` (default), falls back to ``_DEFAULT_CLICK_TIMEOUT_MS`` — i.e. the
+            global ceiling set by the ``BRIDGIC_CLICK_TIMEOUT`` env var (10 s
+            unless overridden). The explicit argument always wins over the env
+            default. Only the direct-click path honors this; the covered-element
+            and ``dispatch_event`` paths don't auto-wait for navigation and so
+            don't need it.
 
         Returns
         -------
@@ -5437,6 +5449,25 @@ Before you return the element ref, reason about the state and elements for a sen
         OperationError
             If the click fails.
         """
+        # Coerce before use: agent tool calls and config/env plumbing routinely
+        # pass numbers as strings, and a string would otherwise reach Playwright
+        # as ``click(timeout="40000")`` → "timeout: expected float, got string".
+        # Coerce first, then apply the falsy→default rule so a stringy "0" is
+        # also normalized. `or` (not `is not None`) so a falsy 0 falls back to
+        # the default rather than reaching Playwright as timeout=0, which means
+        # "wait forever" there and would let a stuck navigation freeze the
+        # daemon — the exact failure mode this ceiling exists to prevent.
+        if timeout_ms is None:
+            effective_timeout_ms = _DEFAULT_CLICK_TIMEOUT_MS
+        else:
+            try:
+                effective_timeout_ms = float(timeout_ms) or _DEFAULT_CLICK_TIMEOUT_MS
+            except (TypeError, ValueError):
+                raise InvalidInputError(
+                    f"timeout_ms must be a number (milliseconds), got {timeout_ms!r}",
+                    code="INVALID_TIMEOUT",
+                    details={"timeout_ms": timeout_ms, "ref": ref},
+                )
         try:
             # A click frequently opens a new page / triggers navigation. Any
             # prefetched snapshot from before the click now refers to the old
@@ -5474,13 +5505,17 @@ Before you return the element ref, reason about the state and elements for a sen
                         else:
                             await locator.dispatch_event("click")
                     else:
-                        await _locator_action_with_fallback(locator, action="click")
+                        await _locator_action_with_fallback(
+                            locator, action="click", timeout_ms=effective_timeout_ms
+                        )
             else:
                 if not is_vis:
                     logger.debug("[click_element_by_ref] bbox=None and is_visible()=False; using dispatch_event click")
                     await locator.dispatch_event("click")
                 else:
-                    await _locator_action_with_fallback(locator, action="click")
+                    await _locator_action_with_fallback(
+                        locator, action="click", timeout_ms=effective_timeout_ms
+                    )
 
             msg = f'Clicked element {ref}'
             logger.info(f'[click_element_by_ref] {msg}')

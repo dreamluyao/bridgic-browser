@@ -4357,6 +4357,133 @@ class TestClickIntegrationUsesFallbackGate:
         locator.dispatch_event.assert_not_awaited()
 
 
+class TestClickElementByRefTimeoutOverride:
+    """``click_element_by_ref(timeout_ms=...)`` forwards a per-call ceiling to
+    the underlying ``_locator_action_with_fallback``; omitting it falls back to
+    the env-driven ``_DEFAULT_CLICK_TIMEOUT_MS``.
+
+    Motivating case: a click that triggers a slow navigation. Playwright's click
+    auto-waits for that navigation, bounded by the action timeout; the default
+    10 s ceiling can fire before a known-slow endpoint commits. The per-call
+    override lets the caller raise the ceiling without touching the global env
+    var. See the "no per-call timeout" gap noted in bug-and-workaround-report.txt.
+    """
+
+    def _make_browser(self) -> Browser:
+        b = Browser()
+        b._context = MagicMock()
+        b._page = MagicMock()
+        return b
+
+    def _make_locator(self) -> MagicMock:
+        # bbox=None + visible → the direct-click branch that calls
+        # _locator_action_with_fallback (the only navigation-waiting path).
+        locator = MagicMock()
+        locator.bounding_box = AsyncMock(return_value=None)
+        locator.is_visible = AsyncMock(return_value=True)
+        locator.is_enabled = AsyncMock(return_value=True)
+        return locator
+
+    @pytest.mark.asyncio
+    async def test_explicit_timeout_ms_is_forwarded(self):
+        """An explicit ``timeout_ms`` reaches ``_locator_action_with_fallback``
+        verbatim, overriding the env default."""
+        browser = self._make_browser()
+        browser.get_element_by_ref = AsyncMock(return_value=self._make_locator())
+
+        spy = AsyncMock()
+        with patch.object(_browser_module, "_locator_action_with_fallback", spy):
+            result = await browser.click_element_by_ref("ref1", timeout_ms=35000)
+
+        assert "Clicked" in result
+        spy.assert_awaited_once()
+        assert spy.await_args.kwargs["timeout_ms"] == 35000
+
+    @pytest.mark.asyncio
+    async def test_default_timeout_uses_env_driven_ceiling(self):
+        """Omitting ``timeout_ms`` forwards ``_DEFAULT_CLICK_TIMEOUT_MS`` — the
+        ceiling derived from ``BRIDGIC_CLICK_TIMEOUT`` — so the env var stays in
+        effect as the default."""
+        browser = self._make_browser()
+        browser.get_element_by_ref = AsyncMock(return_value=self._make_locator())
+
+        spy = AsyncMock()
+        with patch.object(_browser_module, "_locator_action_with_fallback", spy):
+            result = await browser.click_element_by_ref("ref1")
+
+        assert "Clicked" in result
+        spy.assert_awaited_once()
+        assert (
+            spy.await_args.kwargs["timeout_ms"]
+            == _browser_module._DEFAULT_CLICK_TIMEOUT_MS
+        )
+
+    @pytest.mark.asyncio
+    async def test_timeout_zero_falls_back_to_default(self):
+        """``timeout_ms=0`` is treated as unset (a 0 ms click ceiling is
+        nonsensical) and falls back to the default ceiling."""
+        browser = self._make_browser()
+        browser.get_element_by_ref = AsyncMock(return_value=self._make_locator())
+
+        spy = AsyncMock()
+        with patch.object(_browser_module, "_locator_action_with_fallback", spy):
+            await browser.click_element_by_ref("ref1", timeout_ms=0)
+
+        spy.assert_awaited_once()
+        assert (
+            spy.await_args.kwargs["timeout_ms"]
+            == _browser_module._DEFAULT_CLICK_TIMEOUT_MS
+        )
+
+    @pytest.mark.asyncio
+    async def test_stringy_timeout_is_coerced(self):
+        """A numeric *string* (as agent tool calls / config plumbing routinely
+        emit) is coerced to a number — never forwarded as-is, which would make
+        Playwright raise 'timeout: expected float, got string'."""
+        browser = self._make_browser()
+        browser.get_element_by_ref = AsyncMock(return_value=self._make_locator())
+
+        spy = AsyncMock()
+        with patch.object(_browser_module, "_locator_action_with_fallback", spy):
+            await browser.click_element_by_ref("ref1", timeout_ms="40000")
+
+        spy.assert_awaited_once()
+        forwarded = spy.await_args.kwargs["timeout_ms"]
+        assert forwarded == 40000
+        assert isinstance(forwarded, float)
+
+    @pytest.mark.asyncio
+    async def test_stringy_zero_timeout_falls_back_to_default(self):
+        """The falsy→default rule survives coercion: ``"0"`` → 0.0 → default."""
+        browser = self._make_browser()
+        browser.get_element_by_ref = AsyncMock(return_value=self._make_locator())
+
+        spy = AsyncMock()
+        with patch.object(_browser_module, "_locator_action_with_fallback", spy):
+            await browser.click_element_by_ref("ref1", timeout_ms="0")
+
+        spy.assert_awaited_once()
+        assert (
+            spy.await_args.kwargs["timeout_ms"]
+            == _browser_module._DEFAULT_CLICK_TIMEOUT_MS
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_numeric_timeout_raises_invalid_input(self):
+        """A non-numeric ``timeout_ms`` raises a clear ``InvalidInputError``
+        up front rather than a cryptic Playwright type error mid-click."""
+        browser = self._make_browser()
+        browser.get_element_by_ref = AsyncMock(return_value=self._make_locator())
+
+        spy = AsyncMock()
+        with patch.object(_browser_module, "_locator_action_with_fallback", spy):
+            with pytest.raises(InvalidInputError):
+                await browser.click_element_by_ref("ref1", timeout_ms="soon")
+
+        # Rejected before any click was attempted.
+        spy.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # _wrap_js_for_cdp_eval — parity with Playwright page.evaluate(str)
 # ---------------------------------------------------------------------------

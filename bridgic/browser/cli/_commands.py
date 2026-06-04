@@ -240,10 +240,17 @@ def cmd_snapshot(interactive: bool, full_page: bool, limit: int, file: str | Non
 
 @cli.command("click", context_settings=CONTEXT_SETTINGS)
 @click.argument("ref")
-def cmd_click(ref: str) -> None:
+@click.option("--timeout-ms", type=int, default=None,
+              help="Per-click timeout in ms. Raise it for a click that triggers a "
+                   "slow navigation (the click auto-waits for it). Default: the "
+                   "BRIDGIC_CLICK_TIMEOUT ceiling (10s).")
+def cmd_click(ref: str, timeout_ms: int | None) -> None:
     """Click an element by ref (@80365bf7 or 80365bf7)."""
     try:
-        _ok(send_command("click", {"ref": _strip_ref(ref)}, start_if_needed=False))
+        params = {"ref": _strip_ref(ref)}
+        if timeout_ms is not None:
+            params["timeout_ms"] = timeout_ms
+        _ok(send_command("click", params, start_if_needed=False))
     except Exception as exc:
         _err(exc)
 

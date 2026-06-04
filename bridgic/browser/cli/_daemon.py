@@ -199,7 +199,8 @@ async def _handle_snapshot(browser: "Browser", args: Dict[str, Any]) -> str:
 
 async def _handle_click(browser: "Browser", args: Dict[str, Any]) -> str:
     ref = args.get("ref", "")
-    return await browser.click_element_by_ref(ref)
+    # Absent → None → method falls back to the default click ceiling.
+    return await browser.click_element_by_ref(ref, timeout_ms=args.get("timeout_ms"))
 
 
 async def _handle_double_click(browser: "Browser", args: Dict[str, Any]) -> str:

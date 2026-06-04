@@ -586,6 +586,23 @@ class TestCliCommandRouting:
         _, sc = invoke(["click", "e3"])
         sc.assert_called_once_with("click", {"ref": "e3"}, start_if_needed=False)
 
+    def test_click_without_timeout_omits_key(self):
+        # No --timeout-ms → the key must be absent so the daemon/method
+        # falls back to the default ceiling (not sent as null).
+        _, sc = invoke(["click", "@e2"])
+        sc.assert_called_once_with("click", {"ref": "e2"}, start_if_needed=False)
+
+    def test_click_with_timeout_ms(self):
+        _, sc = invoke(["click", "@e2", "--timeout-ms", "35000"])
+        sc.assert_called_once_with(
+            "click", {"ref": "e2", "timeout_ms": 35000}, start_if_needed=False
+        )
+
+    def test_click_timeout_ms_must_be_int(self):
+        result, sc = invoke(["click", "@e2", "--timeout-ms", "abc"])
+        assert result.exit_code != 0
+        sc.assert_not_called()
+
     def test_double_click(self):
         _, sc = invoke(["double-click", "@e4"])
         sc.assert_called_once_with("double_click", {"ref": "e4"}, start_if_needed=False)
@@ -1691,8 +1708,15 @@ class TestDaemonHandlers:
         browser = make_browser()
         browser.click_element_by_ref = AsyncMock(return_value="Clicked e2")
         result = await _handle_click(browser, {"ref": "e2"})
-        browser.click_element_by_ref.assert_awaited_once_with("e2")
+        # No timeout_ms in args → forwarded as None so the method applies its default.
+        browser.click_element_by_ref.assert_awaited_once_with("e2", timeout_ms=None)
         assert result == "Clicked e2"
+
+    async def test_handle_click_forwards_timeout_ms(self):
+        browser = make_browser()
+        browser.click_element_by_ref = AsyncMock(return_value="Clicked e2")
+        await _handle_click(browser, {"ref": "e2", "timeout_ms": 35000})
+        browser.click_element_by_ref.assert_awaited_once_with("e2", timeout_ms=35000)
 
     async def test_handle_fill_calls_tool(self):
         browser = make_browser()
