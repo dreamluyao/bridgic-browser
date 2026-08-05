@@ -181,6 +181,31 @@ tools = builder.build()["tool_specs"]
 
 Also available: `for_tool_names(browser, "click_element_by_ref", ...)` and combining multiple builders. See `docs/BROWSER_TOOLS_GUIDE.md` for full examples.
 
+### Secret values (`is_secret`)
+
+`is_secret=True` (CLI `--secret`) marks a submitted value as a credential on `input_text_by_ref`, `type_text`, and `fill_form` - the latter also accepts `"is_secret": true` on an individual field, which is the right choice on a mixed form. It covers exactly the sinks bridgic owns:
+
+- the string the tool returns (generic confirmation instead of the value; `type_text` also drops the char count, which leaks the password length),
+- bridgic's own log records,
+- error text bridgic raises or logs - Playwright exceptions can echo back the value they were handed, so `_secrets.scrub_secrets()` substring-replaces it out.
+
+**The boundary that matters:** it does *not* reach the `arguments` record kept by the calling agent framework. `bridgic-amphibious` stores each tool call's raw arguments and fans them out to its step log, its on-disk trace, and the next LLM prompt - four sinks, none of them ours. `bridgic/browser/_secrets.py` is the machine-readable contract across that boundary:
+
+| Symbol | Purpose |
+|---|---|
+| `SECRET_TOOL_ARGUMENTS` | `{tool_name: (SecretArgumentRule, ...)}` - every argument that can carry a secret, and the flag that gates it. Tool names are SDK method names, which are also the tool-spec names and the daemon's command names, so one table serves SDK + CLI + agent surfaces. |
+| `redact_tool_arguments(tool_name, args)` | Returns a redacted copy. No-op for unlisted tools and ungated calls, so a framework can apply it to every call unconditionally. Handles `fill_form`'s list-of-dicts and the JSON-string form the CLI transports. |
+| `BrowserToolSpec.secret_arguments` / `.redact_arguments()` | The same thing reachable from a tool spec, so a framework needn't hard-code bridgic's tool names. |
+| `SECRET_SCHEMA_KEY` = `"x-bridgic-secret"` | The import-free half. `BrowserToolSpec.__init__` stamps `{"gated_by": "is_secret", ...}` onto each secret-bearing property of the generated `tool_parameters`, so a framework that already walks a tool's JSON Schema can find the secret without importing from bridgic. The value is a dict, so the naive `if prop.get("x-bridgic-secret")` check degrades to "redact unconditionally" while `gated_by` enables matching bridgic's exact behavior. |
+
+All of these are exported from **both** `bridgic.browser` and `bridgic.browser.tools` (the subpackage a project already imports `BrowserToolSetBuilder` from) - nothing here requires reaching into `_secrets`.
+
+The schema marker is declarative only: **no framework consumes it today.** bridgic-core 0.3.0 has no redaction hook and no `x-` schema handling, and per the AmphiLoop report neither does bridgic-amphibious 0.1.1. Redaction still requires the framework to call `redact_tool_arguments` (or read the marker) at the point it records arguments.
+
+When adding a tool that accepts a secret, add its rule to `SECRET_TOOL_ARGUMENTS` - `tests/unit/test_secrets.py` asserts every declared `value_param`/`gate_param` still exists on the real `Browser` signature, so a renamed parameter fails loudly instead of silently disabling redaction.
+
+Leak paths no flag can close, documented rather than fixed: shell history for a CLI `--secret` invocation, and the page echoing the value back into a later snapshot.
+
 ### Snapshot modes
 
 `get_snapshot(interactive=False, full_page=True)`:

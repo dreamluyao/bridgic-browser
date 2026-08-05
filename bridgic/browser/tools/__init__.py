@@ -104,8 +104,31 @@ from .._constants import ToolCategory
 from ._browser_tool_spec import BrowserToolSpec
 from ._browser_tool_set_builder import BrowserToolSetBuilder
 
+# Re-exported here as well as from ``bridgic.browser``: a project wiring browser
+# tools into an agent framework already imports from this subpackage, and the
+# redaction contract belongs next to the specs it applies to.
+from .._secrets import (
+    REDACTED,
+    SECRET_SCHEMA_KEY,
+    SECRET_TOOL_ARGUMENTS,
+    SecretArgumentRule,
+    annotate_schema_with_secrets,
+    redact_tool_arguments,
+    scrub_secrets,
+    secret_argument_rules,
+)
+
 __all__ = [
     "ToolCategory",
     "BrowserToolSpec",
     "BrowserToolSetBuilder",
+    # Secret handling (also available from ``bridgic.browser``)
+    "REDACTED",
+    "SECRET_SCHEMA_KEY",
+    "SECRET_TOOL_ARGUMENTS",
+    "SecretArgumentRule",
+    "annotate_schema_with_secrets",
+    "redact_tool_arguments",
+    "scrub_secrets",
+    "secret_argument_rules",
 ]

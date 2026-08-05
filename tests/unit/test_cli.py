@@ -617,11 +617,27 @@ class TestCliCommandRouting:
 
     def test_fill(self):
         _, sc = invoke(["fill", "@e3", "hello"])
-        sc.assert_called_once_with("fill", {"ref": "e3", "text": "hello", "submit": False}, start_if_needed=False)
+        sc.assert_called_once_with(
+            "fill",
+            {"ref": "e3", "text": "hello", "submit": False, "is_secret": False},
+            start_if_needed=False,
+        )
 
     def test_fill_with_submit(self):
         _, sc = invoke(["fill", "@e3", "hello", "--submit"])
-        sc.assert_called_once_with("fill", {"ref": "e3", "text": "hello", "submit": True}, start_if_needed=False)
+        sc.assert_called_once_with(
+            "fill",
+            {"ref": "e3", "text": "hello", "submit": True, "is_secret": False},
+            start_if_needed=False,
+        )
+
+    def test_fill_with_secret(self):
+        _, sc = invoke(["fill", "@e3", "hunter2", "--secret"])
+        sc.assert_called_once_with(
+            "fill",
+            {"ref": "e3", "text": "hunter2", "submit": False, "is_secret": True},
+            start_if_needed=False,
+        )
 
     def test_select(self):
         _, sc = invoke(["select", "@e7", "Option A"])
@@ -661,12 +677,29 @@ class TestCliCommandRouting:
     def test_fill_form(self):
         fields = '[{"ref":"e1","value":"hi"}]'
         _, sc = invoke(["fill-form", fields])
-        sc.assert_called_once_with("fill_form", {"fields": fields, "submit": False}, start_if_needed=False)
+        sc.assert_called_once_with(
+            "fill_form",
+            {"fields": fields, "submit": False, "is_secret": False},
+            start_if_needed=False,
+        )
 
     def test_fill_form_with_submit(self):
         fields = '[{"ref":"e1","value":"hi"}]'
         _, sc = invoke(["fill-form", fields, "--submit"])
-        sc.assert_called_once_with("fill_form", {"fields": fields, "submit": True}, start_if_needed=False)
+        sc.assert_called_once_with(
+            "fill_form",
+            {"fields": fields, "submit": True, "is_secret": False},
+            start_if_needed=False,
+        )
+
+    def test_fill_form_with_secret(self):
+        fields = '[{"ref":"e1","value":"hunter2"}]'
+        _, sc = invoke(["fill-form", fields, "--secret"])
+        sc.assert_called_once_with(
+            "fill_form",
+            {"fields": fields, "submit": False, "is_secret": True},
+            start_if_needed=False,
+        )
 
     # ── Keyboard ──────────────────────────────────────────────────────────────
 
@@ -676,11 +709,27 @@ class TestCliCommandRouting:
 
     def test_type(self):
         _, sc = invoke(["type", "hello world"])
-        sc.assert_called_once_with("type_text", {"text": "hello world", "submit": False}, start_if_needed=False)
+        sc.assert_called_once_with(
+            "type_text",
+            {"text": "hello world", "submit": False, "is_secret": False},
+            start_if_needed=False,
+        )
 
     def test_type_with_submit(self):
         _, sc = invoke(["type", "hello", "--submit"])
-        sc.assert_called_once_with("type_text", {"text": "hello", "submit": True}, start_if_needed=False)
+        sc.assert_called_once_with(
+            "type_text",
+            {"text": "hello", "submit": True, "is_secret": False},
+            start_if_needed=False,
+        )
+
+    def test_type_with_secret(self):
+        _, sc = invoke(["type", "hunter2", "--secret"])
+        sc.assert_called_once_with(
+            "type_text",
+            {"text": "hunter2", "submit": False, "is_secret": True},
+            start_if_needed=False,
+        )
 
     def test_type_text_removed(self):
         result, _ = invoke(["type-text", "hello"])
@@ -1722,14 +1771,28 @@ class TestDaemonHandlers:
         browser = make_browser()
         browser.input_text_by_ref = AsyncMock(return_value="Input text 'hello'")
         result = await _handle_fill(browser, {"ref": "e3", "text": "hello"})
-        browser.input_text_by_ref.assert_awaited_once_with("e3", "hello", submit=False)
+        browser.input_text_by_ref.assert_awaited_once_with(
+            "e3", "hello", submit=False, is_secret=False
+        )
         assert "hello" in result
 
     async def test_handle_fill_with_submit(self):
         browser = make_browser()
         browser.input_text_by_ref = AsyncMock(return_value="Input text 'hello'")
         await _handle_fill(browser, {"ref": "e3", "text": "hello", "submit": True})
-        browser.input_text_by_ref.assert_awaited_once_with("e3", "hello", submit=True)
+        browser.input_text_by_ref.assert_awaited_once_with(
+            "e3", "hello", submit=True, is_secret=False
+        )
+
+    async def test_handle_fill_forwards_is_secret(self):
+        browser = make_browser()
+        browser.input_text_by_ref = AsyncMock(
+            return_value="Successfully input sensitive information"
+        )
+        await _handle_fill(browser, {"ref": "e3", "text": "hunter2", "is_secret": True})
+        browser.input_text_by_ref.assert_awaited_once_with(
+            "e3", "hunter2", submit=False, is_secret=True
+        )
 
     async def test_handle_screenshot_passes_full_page(self):
         browser = make_browser()
@@ -1814,7 +1877,18 @@ class TestDaemonHandlers:
         browser.fill_form = AsyncMock(return_value="Form filled")
         fields_json = '[{"ref": "e1", "value": "hello"}]'
         await _handle_fill_form(browser, {"fields": fields_json, "submit": False})
-        browser.fill_form.assert_awaited_once_with([{"ref": "e1", "value": "hello"}], submit=False)
+        browser.fill_form.assert_awaited_once_with(
+            [{"ref": "e1", "value": "hello"}], submit=False, is_secret=False
+        )
+
+    async def test_handle_fill_form_forwards_is_secret(self):
+        browser = make_browser()
+        browser.fill_form = AsyncMock(return_value="Form filled")
+        fields_json = '[{"ref": "e1", "value": "hunter2"}]'
+        await _handle_fill_form(browser, {"fields": fields_json, "is_secret": True})
+        browser.fill_form.assert_awaited_once_with(
+            [{"ref": "e1", "value": "hunter2"}], submit=False, is_secret=True
+        )
 
     async def test_handle_fill_form_invalid_json_raises(self):
         browser = make_browser()
@@ -1822,11 +1896,26 @@ class TestDaemonHandlers:
             await _handle_fill_form(browser, {"fields": "not json", "submit": False})
         assert exc_info.value.code == "INVALID_JSON_FIELDS"
 
+    async def test_handle_fill_form_invalid_json_omits_payload(self):
+        """The malformed payload can be a credential - it must not be echoed back."""
+        browser = make_browser()
+        payload = '[{"ref": "e1", "value": "hunter2"'
+        with pytest.raises(InvalidInputError) as exc_info:
+            await _handle_fill_form(browser, {"fields": payload})
+        assert "hunter2" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value.details or {})
+
     async def test_handle_type_text(self):
         browser = make_browser()
         browser.type_text = AsyncMock(return_value="Typed")
         await _handle_type_text(browser, {"text": "hello", "submit": True})
-        browser.type_text.assert_awaited_once_with("hello", submit=True)
+        browser.type_text.assert_awaited_once_with("hello", submit=True, is_secret=False)
+
+    async def test_handle_type_text_forwards_is_secret(self):
+        browser = make_browser()
+        browser.type_text = AsyncMock(return_value="Successfully typed sensitive information")
+        await _handle_type_text(browser, {"text": "hunter2", "is_secret": True})
+        browser.type_text.assert_awaited_once_with("hunter2", submit=False, is_secret=True)
 
     async def test_handle_key_down(self):
         browser = make_browser()

@@ -558,6 +558,40 @@ class TestElementInteractionTools:
         assert "secret_password" not in result
 
     @pytest.mark.asyncio
+    async def test_input_text_by_ref_secret_scrubbed_from_error(self, mock_browser):
+        """A Playwright error echoing the value must not leak it into the raised error."""
+
+        mock_locator = MagicMock()
+        mock_locator.clear = AsyncMock()
+        mock_locator.fill = AsyncMock(
+            side_effect=RuntimeError('fill("secret_password") timed out')
+        )
+        mock_locator.is_visible = AsyncMock(return_value=True)
+        mock_browser.get_element_by_ref.return_value = mock_locator
+
+        with pytest.raises(OperationError) as exc_info:
+            await Browser.input_text_by_ref(
+                mock_browser, "e1", "secret_password", is_secret=True
+            )
+
+        assert "secret_password" not in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_input_text_by_ref_error_keeps_value_when_not_secret(self, mock_browser):
+        """Without is_secret the error text stays verbatim - scrubbing is opt-in."""
+
+        mock_locator = MagicMock()
+        mock_locator.clear = AsyncMock()
+        mock_locator.fill = AsyncMock(side_effect=RuntimeError('fill("plain_value") failed'))
+        mock_locator.is_visible = AsyncMock(return_value=True)
+        mock_browser.get_element_by_ref.return_value = mock_locator
+
+        with pytest.raises(OperationError) as exc_info:
+            await Browser.input_text_by_ref(mock_browser, "e1", "plain_value")
+
+        assert "plain_value" in str(exc_info.value)
+
+    @pytest.mark.asyncio
     async def test_hover_element_by_ref(self, mock_browser):
         """Test hover_element_by_ref — not covered (bounding_box None → direct hover)."""
 
@@ -1020,6 +1054,37 @@ class TestKeyboardTools:
         assert result == "Typed 4 characters sequentially and submitted"
 
     @pytest.mark.asyncio
+    async def test_type_text_secret_hides_value_and_length(self, mock_browser):
+        """is_secret must drop the char count too - it leaks the password length."""
+
+        result = await Browser.type_text(mock_browser, "hunter2", is_secret=True)
+
+        mock_page = mock_browser.get_current_page.return_value
+        assert mock_page.keyboard.press.call_count == 7  # still typed in full
+        assert "hunter2" not in result
+        assert "7" not in result
+        assert result == "Successfully typed sensitive information"
+
+    @pytest.mark.asyncio
+    async def test_type_text_secret_with_submit(self, mock_browser):
+        result = await Browser.type_text(
+            mock_browser, "hunter2", submit=True, is_secret=True
+        )
+        assert result == "Successfully typed sensitive information and submitted"
+
+    @pytest.mark.asyncio
+    async def test_type_text_secret_scrubbed_from_error(self, mock_browser):
+        mock_page = mock_browser.get_current_page.return_value
+        mock_page.keyboard.press = AsyncMock(
+            side_effect=RuntimeError('press("hunter2") failed')
+        )
+
+        with pytest.raises(OperationError) as exc_info:
+            await Browser.type_text(mock_browser, "hunter2", is_secret=True)
+
+        assert "hunter2" not in str(exc_info.value)
+
+    @pytest.mark.asyncio
     async def test_key_down(self, mock_browser):
         """Test holding a key down."""
 
@@ -1078,6 +1143,64 @@ class TestKeyboardTools:
 
         assert "1/2" in result
         assert "Failed" in result
+
+    @pytest.mark.asyncio
+    async def test_fill_form_accepts_is_secret(self, mock_browser):
+        """The call-level flag must not change what actually gets filled."""
+
+        mock_locator = MagicMock()
+        mock_locator.fill = AsyncMock()
+        mock_browser.get_element_by_ref.return_value = mock_locator
+
+        fields = [{"ref": "e1", "value": "hunter2"}]
+        result = await Browser.fill_form(mock_browser, fields, is_secret=True)
+
+        mock_locator.fill.assert_called_once_with("hunter2")
+        assert "hunter2" not in result
+
+    @pytest.mark.asyncio
+    async def test_fill_form_accepts_per_field_is_secret(self, mock_browser):
+        """A per-field flag is a field spec key, not a value - it must not be filled."""
+
+        mock_locator = MagicMock()
+        mock_locator.fill = AsyncMock()
+        mock_browser.get_element_by_ref.return_value = mock_locator
+
+        fields = [
+            {"ref": "e1", "value": "alice"},
+            {"ref": "e2", "value": "hunter2", "is_secret": True},
+        ]
+        result = await Browser.fill_form(mock_browser, fields)
+
+        assert [c.args[0] for c in mock_locator.fill.call_args_list] == ["alice", "hunter2"]
+        assert "hunter2" not in result
+
+    @pytest.mark.asyncio
+    async def test_fill_form_scrubs_secret_from_field_error(self, mock_browser):
+        """A failing field's Playwright error can echo the value back."""
+
+        mock_locator = MagicMock()
+        mock_locator.fill = AsyncMock(side_effect=RuntimeError('fill("hunter2") timed out'))
+        mock_browser.get_element_by_ref.return_value = mock_locator
+
+        result = await Browser.fill_form(
+            mock_browser, [{"ref": "e1", "value": "hunter2", "is_secret": True}]
+        )
+
+        assert "hunter2" not in result
+        assert "Failed" in result
+
+    @pytest.mark.asyncio
+    async def test_fill_form_keeps_non_secret_value_in_field_error(self, mock_browser):
+        """Ordinary values stay in the error text - the diagnostic is worth more."""
+
+        mock_locator = MagicMock()
+        mock_locator.fill = AsyncMock(side_effect=RuntimeError('fill("plain_value") timed out'))
+        mock_browser.get_element_by_ref.return_value = mock_locator
+
+        result = await Browser.fill_form(mock_browser, [{"ref": "e1", "value": "plain_value"}])
+
+        assert "plain_value" in result
 
 
 # ==================== Screenshot Tools Tests ====================

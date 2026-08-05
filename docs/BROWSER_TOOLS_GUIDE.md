@@ -129,7 +129,7 @@ Full signature: `input_text_by_ref(ref, text, clear=True, is_secret=False, slowl
 | `ref` | str | — | Element ref from snapshot (e.g. `"d6a530b4"`) |
 | `text` | str | — | Text to input |
 | `clear` | bool | `True` | Clear the field before typing |
-| `is_secret` | bool | `False` | Hide text value in the result message (e.g. passwords) |
+| `is_secret` | bool | `False` | Mark the text as a credential - see [Secret values](#secret-values-is_secret) for exactly what that covers |
 | `slowly` | bool | `False` | Type character-by-character with ~100ms delays (triggers all keyboard events) |
 | `submit` | bool | `False` | Press Enter after typing |
 
@@ -163,6 +163,7 @@ await browser.type_text("hello world")
 - Triggers all keyboard events
 - Good for search boxes with autocomplete
 - Can add `submit=True` to press Enter after
+- Can add `is_secret=True` for credentials - see [Secret values](#secret-values-is_secret)
 
 ### Comparison Table
 
@@ -171,6 +172,73 @@ await browser.type_text("hello world")
 | `input_text_by_ref` | Fast | focus, input, change | Standard forms |
 | `input_text_by_ref(slowly=True)` | Slow | All keyboard | Autocomplete |
 | `type_text` | Medium | All keyboard | At cursor (no ref) |
+
+## Secret Values (`is_secret`)
+
+Pass `is_secret=True` whenever the text is a password, token, or OTP. Three
+tools accept it:
+
+```python
+await browser.input_text_by_ref("1f79fe5e", "s3cret", is_secret=True)
+await browser.type_text("s3cret", is_secret=True)
+
+# Whole call, or per field - prefer per field on a mixed form
+await browser.fill_form([
+    {"ref": "d6a530b4", "value": "alice@example.com"},
+    {"ref": "1f79fe5e", "value": "s3cret", "is_secret": True},
+])
+```
+
+The CLI counterpart is `--secret` on `fill`, `type`, and `fill-form`.
+
+**What it covers.** Every sink bridgic controls: the string the tool returns,
+bridgic's own log records, and error text it raises - including a value a
+Playwright exception echoed back. `type_text` additionally suppresses the
+character count, which otherwise reveals the password's length.
+
+**What it does not cover - read this before relying on it.** The *arguments*
+the tool was called with. An agent framework driving these tools records the
+raw arguments dict of every call and typically fans it out to a step log, an
+on-disk trace, and the prompt of the next LLM turn. None of that is reachable
+from this package. Redact at that boundary:
+
+```python
+# Same object either way - use whichever your project already imports from
+from bridgic.browser import redact_tool_arguments
+from bridgic.browser.tools import redact_tool_arguments
+
+safe = redact_tool_arguments("input_text_by_ref", arguments)
+# {"ref": "1f79fe5e", "text": "***", "is_secret": True}
+```
+
+It honours the same flag the call passed (including the per-field form above),
+leaves everything unmarked readable, and is a no-op for tools that take no
+secret - so it is safe to wrap around every tool call unconditionally. When you
+hold a `BrowserToolSpec`, `spec.redact_arguments(arguments)` is the same call,
+and `spec.secret_arguments` tells you which argument the tool's flag guards.
+
+### Finding the secret without importing bridgic
+
+Every generated tool spec also carries the marker in its own JSON Schema, so a
+framework that already walks `tool.parameters` needs no bridgic import at all:
+
+```python
+prop = spec.tool_parameters["properties"]["text"]
+prop["x-bridgic-secret"]      # {"gated_by": "is_secret"}
+```
+
+`fill_form`'s marker adds `item_value_key` / `item_gate_key` to describe where
+the secret sits inside each field dict. The value is always a non-empty dict, so
+a naive `if prop.get("x-bridgic-secret"): redact` works and simply errs toward
+redacting more; reading `gated_by` reproduces bridgic's exact behaviour.
+
+**No framework reads this marker today** - it is a declarative contract, not an
+automatic one. Redaction still happens only where something calls
+`redact_tool_arguments` or acts on the marker.
+
+Two more leak paths `is_secret` cannot close: a shell history entry for
+`bridgic-browser fill @ref "password" --secret`, and the page echoing the value
+back into a later snapshot (an unmasked input exposes its `value`).
 
 ## Click Operations Comparison
 
@@ -401,11 +469,13 @@ tools = builder.build()["tool_specs"]
 ### Form Filling
 
 ```python
-# Using fill_form for multiple fields
+# Using fill_form for multiple fields.
+# Mark the password field so its value stays out of logs and error messages -
+# see "Secret values" above for what that does and does not cover.
 await browser.fill_form([
     {"ref": "1f79fe5e", "value": "John Doe"},
     {"ref": "8d4b03a9", "value": "john@example.com"},
-    {"ref": "07ea3f1c", "value": "secret123"},
+    {"ref": "07ea3f1c", "value": "secret123", "is_secret": True},
 ], submit=True)
 ```
 

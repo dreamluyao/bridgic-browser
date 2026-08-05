@@ -212,3 +212,51 @@ Disable stealth (`Browser(stealth=False)`) or pass an explicit `user_agent`
 (disables R1 + the implicit gating side-effects but keeps other patches).
 
 ---
+
+## `is_secret` Does Not Redact a Framework's Recorded Tool Arguments
+
+### Symptom
+
+A password submitted with `is_secret=True` (or CLI `--secret`) still appears
+verbatim in an agent framework's step log, in its on-disk trace, and in the
+prompt of the next LLM turn.
+
+### Root Cause
+
+`is_secret` reaches every sink bridgic-browser owns - the string the tool
+returns, bridgic's own log records, and error text it raises. It cannot reach
+the *arguments* record kept by whatever framework invoked the tool. A framework
+such as `bridgic-amphibious` stores each tool call's raw `arguments` dict and
+fans it out to its own sinks; that code is in a different package and runs
+before, not through, the tool body.
+
+### Workaround
+
+Redact at the framework boundary, at whatever hook runs before the arguments are
+recorded:
+
+```python
+from bridgic.browser import redact_tool_arguments
+
+safe = redact_tool_arguments(tool_name, arguments)
+```
+
+It honours the flag the call actually passed (including `fill_form`'s per-field
+`"is_secret": true`), leaves unmarked values readable, and is a no-op for tools
+that take no secret - so it can wrap every tool call unconditionally.
+`BrowserToolSpec.redact_arguments()` is the spec-bound equivalent, and
+`BrowserToolSpec.secret_arguments` names the argument each tool's flag guards.
+
+### Also Not Covered
+
+- **Shell history** - `bridgic-browser fill @ref "password" --secret` is
+  recorded verbatim by your shell.
+- **Snapshots** - a page that echoes the value back (an unmasked input exposes
+  its `value`) puts it in the next `get_snapshot_text()`.
+
+### References
+
+- [docs/BROWSER_TOOLS_GUIDE.md - Secret values](BROWSER_TOOLS_GUIDE.md#secret-values-is_secret)
+- `bridgic/browser/_secrets.py`
+
+---

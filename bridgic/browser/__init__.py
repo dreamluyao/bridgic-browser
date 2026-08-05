@@ -18,6 +18,16 @@ from .errors import (
 )
 from .tools import BrowserToolSetBuilder, BrowserToolSpec, ToolCategory
 from ._config import load_browser_config
+from ._secrets import (
+    REDACTED,
+    SECRET_SCHEMA_KEY,
+    SECRET_TOOL_ARGUMENTS,
+    SecretArgumentRule,
+    annotate_schema_with_secrets,
+    redact_tool_arguments,
+    scrub_secrets,
+    secret_argument_rules,
+)
 from ._constants import BRIDGIC_HOME, BRIDGIC_BROWSER_HOME, BRIDGIC_TMP_DIR, BRIDGIC_SNAPSHOT_DIR, BRIDGIC_USER_DATA_DIR
 
 __version__ = version("bridgic-browser")
@@ -59,6 +69,15 @@ __all__ = [
     "ToolCategory",
     # Config
     "load_browser_config",
+    # Secret handling
+    "REDACTED",
+    "SECRET_SCHEMA_KEY",
+    "SECRET_TOOL_ARGUMENTS",
+    "SecretArgumentRule",
+    "annotate_schema_with_secrets",
+    "redact_tool_arguments",
+    "scrub_secrets",
+    "secret_argument_rules",
     # Constants
     "BRIDGIC_HOME",
     "BRIDGIC_BROWSER_HOME",

@@ -24,6 +24,11 @@ if TYPE_CHECKING:
 from .. import _timeouts
 from .._constants import BRIDGIC_TMP_DIR, BRIDGIC_SNAPSHOT_DIR, BRIDGIC_USER_DATA_DIR
 from .._redact import redact_cdp_url as _redact_cdp_url
+from .._secrets import (
+    REDACTED as _REDACTED,
+    scrub_secrets as _scrub_secrets,
+    secret_field_values as _secret_field_values,
+)
 from ._cdp_discovery import (
     _CDP_SCAN_DIRS as _CDP_SCAN_DIRS,
     _probe_cdp_alive as _probe_cdp_alive,
@@ -5284,8 +5289,9 @@ Before you return the element ref, reason about the state and elements for a sen
             Clear existing field content before typing. Default True.
             When False, text is appended to whatever is already in the field.
         is_secret : bool, optional
-            When True, the result message shows a generic confirmation instead
-            of the actual text (for passwords and tokens). Default False.
+            Set True when ``text`` is a password, token, or OTP: the value is
+            then kept out of the result message and of bridgic's logs and error
+            text. Default False. See Notes for the one sink it cannot reach.
         slowly : bool, optional
             When True, types character-by-character with ~100 ms delay between
             keystrokes, triggering per-character ``keydown``/``keyup`` events.
@@ -5307,6 +5313,17 @@ Before you return the element ref, reason about the state and elements for a sen
             If the ref cannot be resolved (element gone or page changed).
         OperationError
             If text input fails.
+
+        Notes
+        -----
+        ``is_secret`` covers every sink bridgic owns - the returned message,
+        bridgic's log records, and error text bridgic raises (a Playwright
+        exception can echo back the value it was handed). It does **not** reach
+        the ``arguments`` record an agent framework keeps of each tool call,
+        which typically reaches a step log, an on-disk trace, and the next LLM
+        prompt. Redact that at the framework boundary with
+        :func:`bridgic.browser.redact_tool_arguments`; see
+        :mod:`bridgic.browser._secrets`.
         """
         try:
             # Any prior prefetch points at the page as it was before this
@@ -5399,8 +5416,12 @@ Before you return the element ref, reason about the state and elements for a sen
         except BridgicBrowserError:
             raise
         except Exception as e:
-            logger.error(f'[input_text_by_ref] Failed to input text: {type(e).__name__}: {e}')
-            error_msg = f'Failed to input text to element {ref}: {e}'
+            # Playwright error text can echo back the value it was handed, so a
+            # secret has to be scrubbed here too - not just from the happy-path
+            # message above.
+            detail = _scrub_secrets(str(e), text) if is_secret else str(e)
+            logger.error(f'[input_text_by_ref] Failed to input text: {type(e).__name__}: {detail}')
+            error_msg = f'Failed to input text to element {ref}: {detail}'
             _raise_operation_error(error_msg)
 
     async def click_element_by_ref(self, ref: str, timeout_ms: Optional[int] = None) -> str:
@@ -6673,7 +6694,12 @@ Before you return the element ref, reason about the state and elements for a sen
 
     # ==================== Keyboard Tools ====================
 
-    async def type_text(self, text: str, submit: bool = False) -> str:
+    async def type_text(
+        self,
+        text: str,
+        submit: bool = False,
+        is_secret: bool = False,
+    ) -> str:
         """Type text into the currently focused element, one character at a time.
 
         Each character fires ``keydown``, ``keypress``, and ``keyup`` events,
@@ -6696,12 +6722,17 @@ Before you return the element ref, reason about the state and elements for a sen
             Text to type character by character.
         submit : bool, optional
             Whether to press Enter after typing. Default is False.
+        is_secret : bool, optional
+            Set True when ``text`` is a password, token, or OTP: the value is
+            then kept out of the result message and of bridgic's logs and error
+            text. Default False. See Notes for the one sink it cannot reach.
 
         Returns
         -------
         str
-            "Typed <N> characters sequentially" (appended with " and submitted"
-            when ``submit=True``).
+            "Typed <N> characters sequentially", or "Successfully typed sensitive
+            information" when ``is_secret=True``. Appended with " and submitted"
+            when ``submit=True``.
 
         Raises
         ------
@@ -6709,9 +6740,19 @@ Before you return the element ref, reason about the state and elements for a sen
             If no active page is available.
         OperationError
             If typing fails.
+
+        Notes
+        -----
+        ``is_secret`` also suppresses the character count, which the normal
+        message and start log both reveal - that is the password's length. It
+        covers every sink bridgic owns but **not** the ``arguments`` record an
+        agent framework keeps of each tool call; redact that at the framework
+        boundary with :func:`bridgic.browser.redact_tool_arguments`. See
+        :mod:`bridgic.browser._secrets`.
         """
         try:
-            logger.info(f"[type_text] start text_len={len(text)} submit={submit}")
+            _len_repr = _REDACTED if is_secret else len(text)
+            logger.info(f"[type_text] start text_len={_len_repr} submit={submit}")
 
             # type_text can submit (Enter) or trigger autocomplete navigation;
             # drop any prior prefetch so the post-typing snapshot is fresh.
@@ -6728,13 +6769,17 @@ Before you return the element ref, reason about the state and elements for a sen
                 await page.keyboard.press("Enter")
 
             submit_msg = " and submitted" if submit else ""
-            result = f"Typed {len(text)} characters sequentially{submit_msg}"
+            if is_secret:
+                result = f"Successfully typed sensitive information{submit_msg}"
+            else:
+                result = f"Typed {len(text)} characters sequentially{submit_msg}"
             logger.info(f"[type_text] done {result}")
             return result
         except BridgicBrowserError:
             raise
         except Exception as e:
-            error_msg = f"Failed to type sequentially: {str(e)}"
+            detail = _scrub_secrets(str(e), text) if is_secret else str(e)
+            error_msg = f"Failed to type sequentially: {detail}"
             logger.error(f"[type_text] {error_msg}")
             _raise_operation_error(error_msg)
 
@@ -6806,28 +6851,39 @@ Before you return the element ref, reason about the state and elements for a sen
 
     async def fill_form(
         self,
-        fields: List[Dict[str, str]],
+        fields: List[Dict[str, Any]],
         submit: bool = False,
+        is_secret: bool = False,
     ) -> str:
         """Fill multiple form fields at once using their snapshot refs.
 
         Iterates through the fields list and calls Playwright's ``locator.fill()``
         on each.  Fields that fail are collected and reported rather than
         aborting early.  Unlike :meth:`input_text_by_ref`, this method does not
-        apply the slowly/clear/is_secret options and does not fall back to JS
-        for hidden inputs — use :meth:`input_text_by_ref` for individual fields
-        that need those features.
+        apply the slowly/clear options and does not fall back to JS for hidden
+        inputs - use :meth:`input_text_by_ref` for individual fields that need
+        those features.
 
         Parameters
         ----------
-        fields : List[Dict[str, str]]
+        fields : List[Dict[str, Any]]
             List of field specifications. Each dict must have:
 
             - ``"ref"`` : str — element ref from snapshot (e.g., "8d4a07a9").
             - ``"value"`` : str — text to fill into the field.
 
+            and may have:
+
+            - ``"is_secret"`` : bool - set True when this field's value is a
+              password, token, or OTP. Prefer this over the call-level flag on a
+              mixed form, so a username stays readable while the password next
+              to it does not.
+
         submit : bool, optional
             Press Enter after filling all fields. Default is False.
+        is_secret : bool, optional
+            Set True when **every** field's value is a credential - equivalent to
+            setting ``"is_secret": True`` on each field. Default False. See Notes.
 
         Returns
         -------
@@ -6846,7 +6902,31 @@ Before you return the element ref, reason about the state and elements for a sen
         OperationError
             If an unexpected error occurs (individual field failures are
             collected into the result message, not raised).
+
+        Notes
+        -----
+        The summary message lists refs only and never contains a value, so what
+        a secret marker changes inside bridgic is the error path: a marked value
+        is scrubbed from the per-field error text bridgic reports and logs. Its
+        other job is to travel with the call - it does **not** reach the
+        ``arguments`` record an agent framework keeps of each tool call. Redact
+        that at the framework boundary with
+        :func:`bridgic.browser.redact_tool_arguments`, which honours both the
+        call-level flag and the per-field one; see
+        :mod:`bridgic.browser._secrets`.
         """
+        # Every value the caller marked secret, whether per-field or via the
+        # call-level flag - scrubbed from error text below. Resolved before the
+        # try so the outer handler can use it whatever raised.
+        if is_secret and isinstance(fields, (list, tuple)):
+            secret_values = tuple(
+                str(field.get("value", ""))
+                for field in fields
+                if isinstance(field, dict)
+            )
+        else:
+            secret_values = _secret_field_values(fields)
+
         try:
             logger.info(f"[fill_form] start fields_count={len(fields)} submit={submit}")
 
@@ -6875,7 +6955,7 @@ Before you return the element ref, reason about the state and elements for a sen
                 except BridgicBrowserError:
                     raise
                 except Exception as e:
-                    errors.append(f"{ref}: {str(e)}")
+                    errors.append(f"{ref}: {_scrub_secrets(str(e), *secret_values)}")
 
             if submit and filled_refs:
                 page = await self.get_current_page()
@@ -6897,7 +6977,7 @@ Before you return the element ref, reason about the state and elements for a sen
         except BridgicBrowserError:
             raise
         except Exception as e:
-            error_msg = f"Failed to fill form: {str(e)}"
+            error_msg = f"Failed to fill form: {_scrub_secrets(str(e), *secret_values)}"
             logger.error(f"[fill_form] {error_msg}")
             _raise_operation_error(error_msg)
 

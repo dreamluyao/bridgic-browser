@@ -33,7 +33,19 @@ When using bridgic-browser:
 
 1. **User Data Protection**
    - Never store sensitive data (passwords, tokens) in logs
-   - Use the `is_secret=True` flag for sensitive input fields
+   - Use `is_secret=True` (CLI: `--secret`) for sensitive input fields on
+     `input_text_by_ref`, `type_text`, and `fill_form` - or `"is_secret": true`
+     on an individual `fill_form` field
+   - **`is_secret` does not redact the arguments your agent framework records.**
+     It covers what bridgic controls: the returned message, bridgic's logs, and
+     error text. A framework that stores each tool call's arguments (step logs,
+     traces, the next LLM prompt) is a separate sink outside this package - pass
+     the call through `bridgic.browser.redact_tool_arguments(tool_name, args)`
+     before recording it. See
+     [docs/BROWSER_TOOLS_GUIDE.md](docs/BROWSER_TOOLS_GUIDE.md#secret-values-is_secret)
+   - Remember two leak paths no flag can close: shell history for a CLI
+     `--secret` invocation, and a page echoing the value back into a later
+     snapshot
    - Be cautious with `user_data_dir` - it may contain sensitive browser data
 
 2. **Network Security**

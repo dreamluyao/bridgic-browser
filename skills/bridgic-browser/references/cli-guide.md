@@ -74,6 +74,10 @@ bridgic-browser open https://example.com
 # Fill and press Enter in one step
 bridgic-browser fill @d6a530b4 "hello@example.com" --submit
 
+# Fill a password: --secret keeps the value out of the response and bridgic's logs
+# (also on `type` and `fill-form`). Your shell history still records it.
+bridgic-browser fill @1f79fe5e "s3cret" --secret
+
 # Snapshot only interactive elements
 bridgic-browser snapshot -i
 

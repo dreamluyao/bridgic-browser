@@ -219,7 +219,9 @@ async def _handle_fill(browser: "Browser", args: Dict[str, Any]) -> str:
     ref = args.get("ref", "")
     text = args.get("text", "")
     submit = args.get("submit", False)
-    return await browser.input_text_by_ref(ref, text, submit=submit)
+    return await browser.input_text_by_ref(
+        ref, text, submit=submit, is_secret=args.get("is_secret", False)
+    )
 
 
 async def _handle_select(browser: "Browser", args: Dict[str, Any]) -> str:
@@ -256,15 +258,18 @@ async def _handle_fill_form(browser: "Browser", args: Dict[str, Any]) -> str:
         try:
             fields = json.loads(fields_raw)
         except json.JSONDecodeError as exc:
+            # ``fields`` can carry credentials, so the malformed payload must not
+            # be echoed back into the error details.
             raise InvalidInputError(
                 f"Invalid JSON for fields: {exc}",
                 code="INVALID_JSON_FIELDS",
-                details={"fields": fields_raw},
             ) from exc
     else:
         fields = fields_raw
     submit = args.get("submit", False)
-    return await browser.fill_form(fields, submit=submit)
+    return await browser.fill_form(
+        fields, submit=submit, is_secret=args.get("is_secret", False)
+    )
 
 
 # ── Keyboard ──────────────────────────────────────────────────────────────────
@@ -274,7 +279,11 @@ async def _handle_press(browser: "Browser", args: Dict[str, Any]) -> str:
 
 
 async def _handle_type_text(browser: "Browser", args: Dict[str, Any]) -> str:
-    return await browser.type_text(args.get("text", ""), submit=args.get("submit", False))
+    return await browser.type_text(
+        args.get("text", ""),
+        submit=args.get("submit", False),
+        is_secret=args.get("is_secret", False),
+    )
 
 
 async def _handle_key_down(browser: "Browser", args: Dict[str, Any]) -> str:

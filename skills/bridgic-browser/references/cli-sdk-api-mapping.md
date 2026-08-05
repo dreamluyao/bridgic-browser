@@ -118,15 +118,18 @@ This model is the foundation of all correspondence in this guide.
   - `wait "Done"` -> `wait_for(text="Done")`
   - `wait --gone "Loading"` -> `wait_for(text_gone="Loading")` — `--gone` only works with a text argument
   - SDK-only (no CLI equivalent): `wait_for(selector=".spinner", state="hidden", timeout=10.0)`
-- `fill REF TEXT [--submit]` -> `input_text_by_ref(ref, text, submit=False)`
-  - SDK-only params: `clear=True` (clear field before typing), `is_secret=False` (mask value in logs), `slowly=False` (type char-by-char with key events)
+- `fill REF TEXT [--submit] [--secret]` -> `input_text_by_ref(ref, text, submit=False, is_secret=False)`
+  - `--secret` -> `is_secret=True`
+  - SDK-only params: `clear=True` (clear field before typing), `slowly=False` (type char-by-char with key events)
+- `is_secret` / `--secret` - **what it does and does not cover.** See [Secret values](#secret-values-is_secret) below before relying on it.
 - `scroll --dy Y --dx X` -> `mouse_wheel(delta_x=X, delta_y=Y)`
 - `mouse-click X Y` / `mouse-move X Y` / `mouse-drag X1 Y1 X2 Y2` — **coordinates are viewport pixels from the top-left corner**
   - `mouse-click X Y --button right --count 2` -> `mouse_click(X, Y, button="right", click_count=2)`
   - `mouse-drag X1 Y1 X2 Y2` -> `mouse_drag(X1, Y1, X2, Y2)` (positional only; params named `start_x, start_y, end_x, end_y`)
-- `fill-form '<json>'`:
+- `fill-form '<json>' [--submit] [--secret]`:
   - CLI passes JSON string.
-  - SDK uses parsed list: `fill_form(fields=[{"ref":"1f79fe5e","value":"..."}], submit=False)`
+  - SDK uses parsed list: `fill_form(fields=[{"ref":"1f79fe5e","value":"..."}], submit=False, is_secret=False)`
+  - `--secret` -> `is_secret=True` (marks every field). Per-field alternative, CLI and SDK alike: `{"ref":"1f79fe5e","value":"...","is_secret":true}`
 - `dialog --dismiss --text T` -> `handle_dialog(accept=False, prompt_text=T)`
 - `dialog-setup --action dismiss --text T` -> `setup_dialog_handler(default_action="dismiss", default_prompt_text=T)`
 - `verify-visible ROLE NAME --timeout 5.0` -> `verify_element_visible(role=ROLE, accessible_name=NAME, timeout=5.0)`
@@ -137,10 +140,50 @@ This model is the foundation of all correspondence in this guide.
 - `pdf path.pdf` -> `save_pdf(filename="path.pdf")`
   - SDK-only params: `display_header_footer`, `print_background`, `scale`, `paper_width`, `paper_height`, `margin_top`, `margin_bottom`, `margin_left`, `margin_right`, `landscape`
 - `video-stop path.webm` -> `stop_video(filename="path.webm")`
-- `type TEXT [--submit]` -> `type_text(text, submit=False)` — **requires a focused element**; call `focus_element_by_ref` or `click_element_by_ref` on the target before `type`
+- `type TEXT [--submit] [--secret]` -> `type_text(text, submit=False, is_secret=False)` - **requires a focused element**; call `focus_element_by_ref` or `click_element_by_ref` on the target before `type`
+  - `--secret` -> `is_secret=True`
 - `eval-on REF CODE` -> `evaluate_javascript_on_ref(ref, code)` — **CODE must be an arrow or named function** that accepts the element:
   - `"(el) => el.textContent"` ✓
   - `"el.textContent"` ✗ (not a function, will throw)
+
+## Secret Values (`is_secret`)
+
+Three tools accept a secret marker for the text they submit:
+
+| CLI | SDK |
+|---|---|
+| `fill REF TEXT --secret` | `input_text_by_ref(ref, text, is_secret=True)` |
+| `type TEXT --secret` | `type_text(text, is_secret=True)` |
+| `fill-form '<json>' --secret` | `fill_form(fields, is_secret=True)` |
+| - | `fill_form([{"ref": ..., "value": ..., "is_secret": True}])` (per field) |
+
+**What it covers.** bridgic keeps the value out of every sink bridgic controls:
+the string the tool returns, bridgic's own log records, and error text it
+raises - including a value a Playwright exception echoed back. `type --secret`
+also drops the character count, which otherwise reveals the password's length.
+
+**What it does NOT cover.** The *arguments* a tool was called with. An agent
+framework driving these tools (e.g. `bridgic-amphibious`) records the raw
+arguments dict of every call and fans it out to its step log, its on-disk
+trace, and the prompt of the next LLM turn. That record is outside
+bridgic-browser. Redact it at the framework boundary:
+
+```python
+from bridgic.browser import redact_tool_arguments
+
+# Before recording / logging / prompting with a tool call:
+safe = redact_tool_arguments("input_text_by_ref", arguments)
+# {"ref": "1f79fe5e", "text": "***", "is_secret": True}
+```
+
+`redact_tool_arguments` is a no-op for tools and calls with nothing marked, so
+it is safe to apply to every tool call. `BrowserToolSpec.redact_arguments()` is
+the same thing bound to a spec, and `BrowserToolSpec.secret_arguments` names the
+argument each tool's flag guards.
+
+**Also not covered:** your shell history records `fill @ref "password"
+--secret` verbatim, and the page itself can echo the value back into a later
+snapshot (e.g. an unmasked input's `value` attribute).
 
 ## CLI-First -> SDK Code Generation Workflow
 
@@ -158,7 +201,7 @@ CLI flow:
 bridgic-browser open https://example.com/login
 bridgic-browser snapshot -i
 bridgic-browser fill @d6a530b4 "alice@example.com"
-bridgic-browser fill @1f79fe5e "secret"
+bridgic-browser fill @1f79fe5e "s3cret" --secret
 bridgic-browser click @8d4b03a9
 bridgic-browser wait "Dashboard"
 bridgic-browser screenshot logged-in.png
@@ -175,7 +218,7 @@ async def run() -> None:
         await browser.navigate_to("https://example.com/login")
         await browser.get_snapshot_text(interactive=True)
         await browser.input_text_by_ref("d6a530b4", "alice@example.com")
-        await browser.input_text_by_ref("1f79fe5e", "secret")
+        await browser.input_text_by_ref("1f79fe5e", "s3cret", is_secret=True)
         await browser.click_element_by_ref("8d4b03a9")
         await browser.wait_for(text="Dashboard")
         await browser.take_screenshot(filename="logged-in.png")

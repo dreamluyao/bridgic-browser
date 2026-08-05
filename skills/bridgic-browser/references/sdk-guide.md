@@ -11,9 +11,10 @@ Use this guide when the output should be Python automation code (`bridgic.browse
 5. [Snapshot and Ref Rules](#snapshot-and-ref-rules)
 6. [Tool Set Builder (for Agent Integration)](#tool-set-builder-for-agent-integration)
 7. [CDP Mode (Connect to Existing Browser)](#cdp-mode-connect-to-existing-browser)
-8. [Non-Obvious SDK Behavior](#non-obvious-sdk-behavior)
-9. [SDK Error Handling](#sdk-error-handling)
-10. [When to Load Other References](#when-to-load-other-references)
+8. [Secret Values (`is_secret`)](#secret-values-is_secret)
+9. [Non-Obvious SDK Behavior](#non-obvious-sdk-behavior)
+10. [SDK Error Handling](#sdk-error-handling)
+11. [When to Load Other References](#when-to-load-other-references)
 
 ## Installation and Imports
 
@@ -146,6 +147,53 @@ Quick notes (full details in [`cdp-mode.md`](cdp-mode.md)):
 - The daemon auto-reconnects once if the CDP session drops; pick `cdp="9222"` / `"auto"` / `"http://..."` (not a raw `ws://.../<UUID>`) if the remote Chrome may restart.
 
 For how to enable CDP on the target Chrome (Chrome 144+ `chrome://inspect/#remote-debugging` UI vs. legacy `--remote-debugging-port` launch flag) and the full limitation matrix, read [`cdp-mode.md`](cdp-mode.md).
+
+## Secret Values (`is_secret`)
+
+Mark credentials on the three text-submitting tools:
+
+```python
+await browser.input_text_by_ref("1f79fe5e", "s3cret", is_secret=True)
+await browser.type_text("s3cret", is_secret=True)
+await browser.fill_form([
+    {"ref": "d6a530b4", "value": "alice@example.com"},
+    {"ref": "1f79fe5e", "value": "s3cret", "is_secret": True},   # per field
+])
+await browser.fill_form(fields, is_secret=True)                   # or whole call
+```
+
+**Covers** every sink bridgic owns: the returned string, bridgic's log records,
+and error text it raises (a Playwright exception can echo the value back).
+`type_text` additionally suppresses the character count.
+
+**Does not cover** the `arguments` record kept by an agent framework driving
+these tools - that record (step log, on-disk trace, next LLM prompt) is outside
+this package. Redact it at that boundary before recording:
+
+```python
+# Exported from both; same object
+from bridgic.browser import redact_tool_arguments
+from bridgic.browser.tools import redact_tool_arguments
+
+safe = redact_tool_arguments("input_text_by_ref", arguments)
+# {"ref": "1f79fe5e", "text": "***", "is_secret": True}
+```
+
+Safe to apply to every tool call - it is a no-op for tools and calls with
+nothing marked. `BrowserToolSpec.redact_arguments()` / `.secret_arguments` expose
+the same thing from a tool spec.
+
+Import-free alternative: each generated spec stamps the marker into its own
+schema, so a framework that already walks `tool.parameters` can find the secret
+argument there.
+
+```python
+spec.tool_parameters["properties"]["text"]["x-bridgic-secret"]
+# {"gated_by": "is_secret"}
+```
+
+No framework acts on that marker today; it is a contract for one to read, not
+automatic redaction.
 
 ## Non-Obvious SDK Behavior
 

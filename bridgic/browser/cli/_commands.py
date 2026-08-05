@@ -290,10 +290,18 @@ def cmd_focus(ref: str) -> None:
 @click.argument("text")
 @click.option("--submit", is_flag=True, default=False,
               help="Press Enter after filling.")
-def cmd_fill(ref: str, text: str, submit: bool) -> None:
+@click.option("--secret", is_flag=True, default=False,
+              help="TEXT is a credential: keep it out of the result message and "
+                   "of bridgic's logs. Your shell history still records it.")
+def cmd_fill(ref: str, text: str, submit: bool, secret: bool) -> None:
     """Fill an input element by ref with TEXT."""
     try:
-        _ok(send_command("fill", {"ref": _strip_ref(ref), "text": text, "submit": submit}, start_if_needed=False))
+        _ok(send_command("fill", {
+            "ref": _strip_ref(ref),
+            "text": text,
+            "submit": submit,
+            "is_secret": secret,
+        }, start_if_needed=False))
     except Exception as exc:
         _err(exc)
 
@@ -380,15 +388,25 @@ def cmd_upload(ref: str, path: str) -> None:
 @click.argument("fields_json")
 @click.option("--submit", is_flag=True, default=False,
               help="Press Enter after filling the last field.")
-def cmd_fill_form(fields_json: str, submit: bool) -> None:
+@click.option("--secret", is_flag=True, default=False,
+              help="Every field value is a credential. For a mixed form, set "
+                   '"is_secret": true on individual fields instead.')
+def cmd_fill_form(fields_json: str, submit: bool, secret: bool) -> None:
     """Fill multiple form fields all at once.
 
     FIELDS_JSON is a JSON array of {"ref": "REF", "value": "TEXT"} objects.
     Example: '[{"ref":"8d4a07a9","value":"Alice"},{"ref":"9e5f18b0","value":"secret"}]'
     Get refs from the 'snapshot' command.
+
+    A field may also carry "is_secret": true to mark just that value as a
+    credential, keeping it out of bridgic's logs and error messages.
     """
     try:
-        _ok(send_command("fill_form", {"fields": fields_json, "submit": submit}, start_if_needed=False))
+        _ok(send_command("fill_form", {
+            "fields": fields_json,
+            "submit": submit,
+            "is_secret": secret,
+        }, start_if_needed=False))
     except Exception as exc:
         _err(exc)
 
@@ -412,13 +430,21 @@ def cmd_press(key: str) -> None:
 @click.argument("text")
 @click.option("--submit", is_flag=True, default=False,
               help="Press Enter after typing.")
-def cmd_type(text: str, submit: bool) -> None:
+@click.option("--secret", is_flag=True, default=False,
+              help="TEXT is a credential: keep it and its length out of the "
+                   "result message and of bridgic's logs. Your shell history "
+                   "still records it.")
+def cmd_type(text: str, submit: bool, secret: bool) -> None:
     """Type TEXT into the currently focused element, character-by-character (triggers keyboard events).
 
     Use 'click' or 'focus' first to focus the target element before typing.
     """
     try:
-        _ok(send_command("type_text", {"text": text, "submit": submit}, start_if_needed=False))
+        _ok(send_command("type_text", {
+            "text": text,
+            "submit": submit,
+            "is_secret": secret,
+        }, start_if_needed=False))
     except Exception as exc:
         _err(exc)
 

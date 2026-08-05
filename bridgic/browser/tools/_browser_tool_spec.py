@@ -2,7 +2,7 @@
 Browser tool specification for binding browser tools to Browser instances.
 """
 import inspect
-from typing import Optional, Callable, Dict, Any, TYPE_CHECKING
+from typing import Optional, Callable, Dict, Any, Tuple, TYPE_CHECKING
 from typing_extensions import override
 from functools import partial
 
@@ -11,6 +11,14 @@ from bridgic.core.model.types import Tool
 from bridgic.core.automa.worker import Worker, CallableWorker
 from bridgic.core.utils._json_schema import create_func_params_json_schema
 from bridgic.core.utils._inspect_tools import get_tool_description_from
+
+from .._secrets import (
+    SECRET_SCHEMA_KEY,
+    SecretArgumentRule,
+    annotate_schema_with_secrets,
+    redact_tool_arguments,
+    secret_argument_rules,
+)
 
 if TYPE_CHECKING:
     from ..session._browser import Browser
@@ -56,6 +64,12 @@ class BrowserToolSpec(ToolSpec):
             tool_description=tool_description,
             tool_parameters=tool_parameters,
             from_builder=from_builder,
+        )
+        # Stamped here rather than in from_raw so every construction path, and a
+        # caller-supplied schema, carries the marker. No-op for tools with no
+        # secret argument, and never mutates the dict the caller passed in.
+        self._tool_parameters = annotate_schema_with_secrets(
+            self._tool_name, self._tool_parameters
         )
         self._func = func
         # If func is a bound method the browser is accessible via __self__
@@ -138,6 +152,64 @@ class BrowserToolSpec(ToolSpec):
         """Get the original tool function or bound method."""
         return self._func
 
+    @property
+    def secret_arguments(self) -> Tuple[SecretArgumentRule, ...]:
+        """Arguments of this tool that can carry a credential.
+
+        Empty for every tool that takes no secret. An agent framework can read
+        this to learn *which* argument a tool's ``is_secret`` flag guards without
+        hard-coding bridgic's tool names; :meth:`redact_arguments` applies the
+        rules for the common case.
+
+        Returns
+        -------
+        Tuple[SecretArgumentRule, ...]
+        """
+        return secret_argument_rules(self._tool_name)
+
+    @property
+    def secret_schema_key(self) -> str:
+        """The JSON Schema extension key marking a secret-bearing property.
+
+        ``"x-bridgic-secret"``. Present on the generated ``tool_parameters`` of
+        every tool with a secret argument, so a framework can find it by walking
+        the schema instead of importing from bridgic:
+
+        >>> spec.tool_parameters["properties"]["text"][spec.secret_schema_key]
+        {'gated_by': 'is_secret'}
+
+        Returns
+        -------
+        str
+        """
+        return SECRET_SCHEMA_KEY
+
+    def redact_arguments(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a copy of ``arguments`` safe to log, trace, or send to an LLM.
+
+        Values the call marked secret (``is_secret=True``) are replaced with
+        ``"***"``; everything else is left readable. Call this before recording a
+        tool call - bridgic masks its own return messages and logs, but cannot
+        reach a framework's arguments record.
+
+        Parameters
+        ----------
+        arguments : Dict[str, Any]
+            The arguments this tool was called with.
+
+        Returns
+        -------
+        Dict[str, Any]
+            A redacted shallow copy; the input is never mutated.
+
+        Examples
+        --------
+        >>> spec = BrowserToolSpec.from_raw(browser.input_text_by_ref)
+        >>> spec.redact_arguments({"ref": "8d4b03a9", "text": "pw", "is_secret": True})
+        {'ref': '8d4b03a9', 'text': '***', 'is_secret': True}
+        """
+        return redact_tool_arguments(self._tool_name, arguments)
+
     @override
     def to_tool(self) -> Tool:
         """
@@ -181,6 +253,10 @@ class BrowserToolSpec(ToolSpec):
         # load_from_dict is not supported — use BrowserToolSetBuilder to recreate.
         state_dict = super().dump_to_dict()
         state_dict["func"] = self._func.__module__ + "." + self._func.__qualname__
+        # Surfaced so a dumped spec still shows which argument carries a secret.
+        secret_args = self.secret_arguments
+        if secret_args:
+            state_dict["secret_arguments"] = [rule.value_param for rule in secret_args]
         if self._browser is not None:
             state_dict["browser_name"] = getattr(self._browser, "name", self._browser.__class__.__name__)
             state_dict["browser_id"] = str(id(self._browser))
