@@ -22,7 +22,10 @@ from bridgic.browser.session._snapshot import (
     RoleNameTracker,
     SnapshotGenerator,
     SnapshotOptions,
+    find_value_child_refs,
+    mask_ref_values_in_tree,
 )
+from bridgic.browser._secrets import REDACTED
 
 
 # ---------------------------------------------------------------------------
@@ -3905,3 +3908,236 @@ class TestResolveViewportSize:
         width, height = await gen._resolve_viewport_size(page)
 
         assert (width, height) == (None, None)
+
+
+# ---------------------------------------------------------------------------
+# mask_ref_values_in_tree — secret-masking substitution (Layers 1 & 2)
+# ---------------------------------------------------------------------------
+# Shared by SnapshotGenerator._detect_password_refs (Layer 1: unconditional
+# input[type=password] masking) and Browser._mask_secret_refs_in_tree
+# (Layer 2: explicit is_secret-marked refs on non-password fields).
+
+class TestMaskRefValuesInTree:
+    """Tests for the tree-text redaction helper."""
+
+    def test_empty_ref_ids_returns_tree_unchanged(self) -> None:
+        tree = '- textbox "Password" [ref=abc12345]: hunter2'
+        assert mask_ref_values_in_tree(tree, set()) is tree
+
+    def test_masks_value_after_ref(self) -> None:
+        tree = '- textbox "Password" [ref=abc12345]: hunter2'
+        masked = mask_ref_values_in_tree(tree, {"abc12345"})
+        assert masked == f'- textbox "Password" [ref=abc12345]: {REDACTED}'
+        assert "hunter2" not in masked
+
+    def test_masks_value_with_trailing_nth_marker(self) -> None:
+        tree = '- textbox "Token" [ref=abc12345] [nth=1]: secret-token'
+        masked = mask_ref_values_in_tree(tree, {"abc12345"})
+        assert masked == f'- textbox "Token" [ref=abc12345] [nth=1]: {REDACTED}'
+
+    def test_leaves_unrelated_lines_untouched(self) -> None:
+        tree = (
+            '- textbox "Username" [ref=e1111111]: alice\n'
+            '- textbox "Password" [ref=abc12345]: hunter2'
+        )
+        masked = mask_ref_values_in_tree(tree, {"abc12345"})
+        assert '- textbox "Username" [ref=e1111111]: alice' in masked
+        assert f'- textbox "Password" [ref=abc12345]: {REDACTED}' in masked
+        assert "hunter2" not in masked
+
+    def test_empty_field_left_as_is(self) -> None:
+        """A field with nothing after the colon has nothing to redact."""
+        tree = '- textbox "Password" [ref=abc12345]:'
+        masked = mask_ref_values_in_tree(tree, {"abc12345"})
+        assert masked == tree
+
+    def test_no_colon_at_all_left_as_is(self) -> None:
+        tree = '- textbox "Password" [ref=abc12345]'
+        masked = mask_ref_values_in_tree(tree, {"abc12345"})
+        assert masked == tree
+
+    def test_ref_not_present_is_noop(self) -> None:
+        tree = '- textbox "Password" [ref=abc12345]: hunter2'
+        masked = mask_ref_values_in_tree(tree, {"deadbeef"})
+        assert masked == tree
+
+    def test_masks_multiple_refs_independently(self) -> None:
+        tree = (
+            '- textbox "Password" [ref=abc12345]: hunter2\n'
+            '- textbox "Token" [ref=deadbeef]: abc-123-token'
+        )
+        masked = mask_ref_values_in_tree(tree, {"abc12345", "deadbeef"})
+        assert "hunter2" not in masked
+        assert "abc-123-token" not in masked
+        assert masked.count(REDACTED) == 2
+
+    # -- shape 2: value promoted to a separate child's accessible name --
+    # Playwright nests the value as a sibling "text" node (instead of an
+    # inline colon-suffix) whenever the input has another AX child too —
+    # a placeholder is enough to trigger this. Real shape, confirmed against
+    # a live browser: `- textbox "Password" [ref=X]:\n- text "hunter2" [ref=Y]`.
+
+    def test_masks_value_child_quoted_name(self) -> None:
+        tree = (
+            '- textbox "Password" [ref=e3000001]:\n'
+            '- text "hunter2" [ref=e5fd48a2]'
+        )
+        masked = mask_ref_values_in_tree(tree, set(), {"e5fd48a2"})
+        assert "hunter2" not in masked
+        assert f'- text "{REDACTED}" [ref=e5fd48a2]' in masked
+
+    def test_does_not_touch_input_label_when_only_own_ref_given(self) -> None:
+        """Regression: an input's own ref must NEVER be run through the
+        quoted-name pattern — its quoted name is its LABEL (e.g.
+        "Password"), not a value. Only value_child_ref_ids may use that
+        pattern. Masking own_ref_ids alone (no colon-suffix present here)
+        must leave the label line completely untouched."""
+        tree = '- textbox "Password" [ref=e3000001]:'
+        masked = mask_ref_values_in_tree(tree, {"e3000001"})
+        assert masked == tree
+        assert '"Password"' in masked
+
+    def test_own_ref_and_value_child_ref_masked_independently(self) -> None:
+        """The realistic end-to-end shape: the input's own ref (label,
+        untouched) plus its value-child ref (value, masked)."""
+        tree = (
+            '- textbox "Password" [ref=e3000001]:\n'
+            '- text "hunter2" [ref=e5fd48a2]'
+        )
+        masked = mask_ref_values_in_tree(tree, {"e3000001"}, {"e5fd48a2"})
+        assert '"Password"' in masked
+        assert "hunter2" not in masked
+        assert f'"{REDACTED}"' in masked
+
+    def test_value_child_ref_ids_defaults_to_empty(self) -> None:
+        """Calling with only own_ref_ids (the pre-existing 2-arg call shape)
+        must not blow up and must not touch any quoted name."""
+        tree = '- text "hunter2" [ref=e5fd48a2]'
+        masked = mask_ref_values_in_tree(tree, set())
+        assert masked == tree
+
+
+# ---------------------------------------------------------------------------
+# find_value_child_refs — locates a filled input's value-carrying child
+# ---------------------------------------------------------------------------
+
+class TestFindValueChildRefs:
+    """Tests for the ref-graph lookup that pairs an input's own ref with
+    whichever child ref (if any) is carrying its promoted-to-name value."""
+
+    def test_empty_ref_ids_returns_empty_set(self) -> None:
+        refs = {"e1": RefData(selector="", role="text", name="v", parent_ref="abc12345")}
+        assert find_value_child_refs(set(), refs) == set()
+
+    def test_finds_direct_child_of_target_ref(self) -> None:
+        refs = {
+            "abc12345": RefData(selector="", role="textbox", name="Password"),
+            "e5fd48a2": RefData(selector="", role="text", name="hunter2", parent_ref="abc12345"),
+        }
+        assert find_value_child_refs({"abc12345"}, refs) == {"e5fd48a2"}
+
+    def test_no_child_returns_empty_set(self) -> None:
+        """The inline (shape 1) case has no child at all."""
+        refs = {
+            "e1111111": RefData(selector="", role="textbox", name="Username"),
+        }
+        assert find_value_child_refs({"e1111111"}, refs) == set()
+
+    def test_ignores_children_of_unrelated_refs(self) -> None:
+        refs = {
+            "abc12345": RefData(selector="", role="textbox", name="Password"),
+            "e5fd48a2": RefData(selector="", role="text", name="hunter2", parent_ref="abc12345"),
+            "e1111111": RefData(selector="", role="textbox", name="Username"),
+            "e2222222": RefData(selector="", role="text", name="alice", parent_ref="e1111111"),
+        }
+        assert find_value_child_refs({"abc12345"}, refs) == {"e5fd48a2"}
+
+
+# ---------------------------------------------------------------------------
+# _detect_password_refs — Layer 1 unconditional password-input detection
+# ---------------------------------------------------------------------------
+# Cross-references each "textbox"-role ref's live DOM element via the same
+# aria-ref locator engine Browser.get_element_by_ref's fast path uses, so
+# masking applies independently of whether bridgic (or anything at all —
+# browser autofill included) ever wrote to the field.
+
+class TestDetectPasswordRefs:
+    """Tests for SnapshotGenerator._detect_password_refs."""
+
+    @pytest.mark.asyncio
+    async def test_no_textbox_refs_returns_empty_set(self, gen: SnapshotGenerator) -> None:
+        refs = {
+            "e1": RefData(selector="", role="button", name="Submit", playwright_ref="e1"),
+        }
+        page = MagicMock()
+        result = await gen._detect_password_refs(page, refs)
+        assert result == set()
+        page.locator.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_textbox_without_playwright_ref_is_skipped(self, gen: SnapshotGenerator) -> None:
+        refs = {
+            "e1": RefData(selector="", role="textbox", name="Email", playwright_ref=None),
+        }
+        page = MagicMock()
+        result = await gen._detect_password_refs(page, refs)
+        assert result == set()
+        page.locator.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_identifies_password_input_via_aria_ref(self, gen: SnapshotGenerator) -> None:
+        refs = {
+            "abc12345": RefData(selector="", role="textbox", name="Password", playwright_ref="e5"),
+            "e1111111": RefData(selector="", role="textbox", name="Username", playwright_ref="e1"),
+        }
+        page = MagicMock()
+
+        def _locator(selector: str) -> MagicMock:
+            loc = MagicMock()
+            loc.evaluate = AsyncMock(return_value=(selector == "aria-ref=e5"))
+            return loc
+
+        page.locator.side_effect = _locator
+
+        result = await gen._detect_password_refs(page, refs)
+
+        assert result == {"abc12345"}
+
+    @pytest.mark.asyncio
+    async def test_scopes_through_frame_path(self, gen: SnapshotGenerator) -> None:
+        refs = {
+            "abc12345": RefData(
+                selector="", role="textbox", name="Password",
+                playwright_ref="e5", frame_path=[0],
+            ),
+        }
+        page = MagicMock()
+        frame_locator = MagicMock()
+        scoped = MagicMock()
+        inner_locator = MagicMock()
+        inner_locator.evaluate = AsyncMock(return_value=True)
+        scoped.locator.return_value = inner_locator
+        frame_locator.nth.return_value = scoped
+        page.frame_locator.return_value = frame_locator
+
+        result = await gen._detect_password_refs(page, refs)
+
+        assert result == {"abc12345"}
+        page.frame_locator.assert_called_once_with("iframe")
+        frame_locator.nth.assert_called_once_with(0)
+
+    @pytest.mark.asyncio
+    async def test_aria_ref_resolution_failure_is_swallowed(self, gen: SnapshotGenerator) -> None:
+        """A stale/failed aria-ref lookup leaves that ref unmasked by Layer 1
+        rather than raising — best-effort, must not break snapshot generation."""
+        refs = {
+            "abc12345": RefData(selector="", role="textbox", name="Password", playwright_ref="e5"),
+        }
+        page = MagicMock()
+        loc = MagicMock()
+        loc.evaluate = AsyncMock(side_effect=RuntimeError("stale"))
+        page.locator.return_value = loc
+
+        result = await gen._detect_password_refs(page, refs)
+
+        assert result == set()

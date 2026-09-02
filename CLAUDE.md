@@ -187,7 +187,15 @@ Also available: `for_tool_names(browser, "click_element_by_ref", ...)` and combi
 
 - the string the tool returns (generic confirmation instead of the value; `type_text` also drops the char count, which leaks the password length),
 - bridgic's own log records,
-- error text bridgic raises or logs - Playwright exceptions can echo back the value they were handed, so `_secrets.scrub_secrets()` substring-replaces it out.
+- error text bridgic raises or logs - Playwright exceptions can echo back the value they were handed, so `_secrets.scrub_secrets()` substring-replaces it out,
+- the accessibility snapshot tree - see "Secret masking in the snapshot" below.
+
+**Secret masking in the snapshot** (two independent layers, `bridgic/browser/session/_snapshot.py` + `_browser.py`):
+
+- **Layer 1 (unconditional):** every `input[type="password"]` value is masked in `get_snapshot()`/`get_snapshot_text()` output regardless of `is_secret` - even a value that arrived via browser autofill or page JS, not just bridgic's own fill tools. `SnapshotGenerator._detect_password_refs` cross-references each `textbox`-role ref's live DOM element via the same `aria-ref=` locator engine `get_element_by_ref`'s fast path uses (the accessibility tree itself carries no `type=password` marker - every text-like input maps to role `"textbox"`).
+- **Layer 2 (`is_secret`-gated):** a ref filled via `input_text_by_ref`/`fill_form` with `is_secret=True` stays masked too, for fields Layer 1 doesn't cover (e.g. an API-key input typed as `type="text"`). Tracked in `Browser._secret_marked_refs`, last-fill-wins (refilling without `is_secret` un-masks it). Cleared both proactively (`_invalidate_page_state`, before bridgic's own navigation-causing tool methods) and reactively (`_arm_secret_ref_invalidation`'s `framenavigated` listener, for a navigation none of those methods initiated - e.g. a link click or the page's own redirect). Refs are content-addressed hashes, so a stale entry can only false-positive-mask an unrelated element after navigation - never miss masking a real secret.
+- Both layers share `mask_ref_values_in_tree` / `find_value_child_refs`: a filled `<input>`/`<textarea>`'s value renders in one of two shapes depending on whether Playwright's `snapshotForAI` gave the element another AX child alongside its value (a `placeholder` is enough to trigger this) - inlined as a `": <value>"` suffix on the input's own ref line, or promoted into a separate child node's accessible name. Masking the wrong shape against the wrong ref is a real trap: an input's own quoted name is its *label* (e.g. `"Password"`), never its value - only a value-child ref (from `find_value_child_refs`) may go through the quoted-name mask.
+- `type_text` has no ref (types into whatever's focused) - it isn't reachable by Layer 2. Accepted, documented gap rather than added complexity; Layer 1 still covers it when the field is `type="password"`.
 
 **The boundary that matters:** it does *not* reach the `arguments` record kept by the calling agent framework. `bridgic-amphibious` stores each tool call's raw arguments and fans them out to its step log, its on-disk trace, and the next LLM prompt - four sinks, none of them ours. `bridgic/browser/_secrets.py` is the machine-readable contract across that boundary:
 

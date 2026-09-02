@@ -86,7 +86,13 @@ historically imported ``PlaywrightTimeoutError`` from this module. The actual
 usage site has moved to :mod:`._locator_utils`."""
 from pydantic import BaseModel
 
-from ._snapshot import EnhancedSnapshot, SnapshotGenerator, SnapshotOptions
+from ._snapshot import (
+    EnhancedSnapshot,
+    SnapshotGenerator,
+    SnapshotOptions,
+    find_value_child_refs,
+    mask_ref_values_in_tree,
+)
 from ._browser_model import FullPageInfo, PageDesc, PageInfo, PageSizeInfo
 from ._stealth import (
     StealthConfig,
@@ -629,6 +635,18 @@ class Browser:
         self._last_snapshot_url: Optional[str] = None
         self._snapshot_generator: Optional[SnapshotGenerator] = None
         self._snapshot_lock = asyncio.Lock()
+        # Refs filled via input_text_by_ref/fill_form with is_secret=True.
+        # get_snapshot() blanks their value in the tree text on every call,
+        # regardless of DOM element type (Layer 2 of secret masking — see
+        # SnapshotGenerator._detect_password_refs for Layer 1, which covers
+        # input[type=password] unconditionally). Refs are content-addressed
+        # hashes, so a stale entry can only false-positive-mask an unrelated
+        # element that happens to hash-collide after navigation — never miss
+        # masking a real secret. Cleared on navigation both proactively (see
+        # _invalidate_page_state) and reactively (see
+        # _arm_secret_ref_invalidation's framenavigated listener, which also
+        # catches navigations no bridgic tool method initiated).
+        self._secret_marked_refs: Set[str] = set()
         # Background snapshot pre-warm (kicked off after navigate_to).
         # Uses a dedicated generator so it never races with _snapshot_generator.
         self._prefetch_snapshot: Optional[EnhancedSnapshot] = None
@@ -1517,6 +1535,24 @@ class Browser:
 
         page.on("framenavigated", _on_nav)
 
+    def _arm_secret_ref_invalidation(self, page: "Page") -> None:
+        """Clear `_secret_marked_refs` on every main-frame navigation.
+
+        `_invalidate_page_state()` already clears this proactively before
+        bridgic's own navigation-causing tool methods (navigate_to,
+        reload_page, switch_tab, close_tab, ...) act. This listener is the
+        reactive backstop for navigations that don't go through one of those
+        — a link click that triggers a full page load, or the page's own
+        JS-driven redirect — so a caller never has to remember to invalidate
+        anything themselves. Unconditional (not gated by stealth_enabled):
+        this is a correctness/security concern, not a stealth patch.
+        """
+        def _on_nav(frame) -> None:
+            if frame == page.main_frame:
+                self._secret_marked_refs.clear()
+
+        page.on("framenavigated", _on_nav)
+
     async def _apply_r1_ua_cleanup(self, page: "Page") -> None:
         """R1: rewrite Sec-CH-UA brands so `HeadlessChromium` / `Chromium` don't leak.
 
@@ -1829,6 +1865,11 @@ class Browser:
             for _p in self._context.pages:
                 self._mark_owned(_p)
             self._context.on("page", self._on_new_page)
+
+            # Secret-ref masking backstop (not a stealth feature — always on,
+            # both modes). See _arm_secret_ref_invalidation docstring.
+            self._arm_secret_ref_invalidation(self._page)
+            self._context.on("page", lambda p: self._arm_secret_ref_invalidation(p))
 
             # R1 + R3 are headless-only — see `_apply_r1_ua_cleanup` and
             # `_arm_worker_stealth` docstrings for why we never touch UA / worker
@@ -2574,6 +2615,7 @@ class Browser:
         self._last_snapshot = None
         self._last_snapshot_url = None
         self._cancel_prefetch()
+        self._secret_marked_refs.clear()
         self._last_shutdown_artifacts = shutdown_artifacts
         self._last_shutdown_errors = list(errors)
 
@@ -3574,7 +3616,7 @@ class Browser:
                         self._prefetch_snapshot = None
                         self._last_snapshot = cached
                         self._last_snapshot_url = current_url
-                        return cached
+                        return self._mask_secret_refs_in_tree(cached)
 
                     # Pre-warm miss (either still running or different options).
                     # If the task is for the same options and URL, wait for it
@@ -3601,7 +3643,7 @@ class Browser:
                             )
                         )
                         self._last_snapshot_url = current_url
-                        return self._last_snapshot
+                        return self._mask_secret_refs_in_tree(self._last_snapshot)
 
                 # Matching prewarm in-flight: wait for it without holding locks.
                 try:
@@ -3640,6 +3682,28 @@ class Browser:
             _prefetch_url=None,
         )
 
+    def _mask_secret_refs_in_tree(self, snapshot: EnhancedSnapshot) -> EnhancedSnapshot:
+        """Apply Layer 2 of snapshot secret-masking to ``snapshot.tree`` in place.
+
+        Blanks the value of every line whose ref is in
+        ``self._secret_marked_refs`` (set by ``input_text_by_ref``/
+        ``fill_form`` when called with ``is_secret=True``). Layer 1
+        (``input[type=password]``, masked unconditionally) is already baked
+        into ``snapshot.tree`` by ``SnapshotGenerator`` at generation time;
+        this covers the broader ``is_secret`` contract for non-password
+        fields. Applied fresh on every call — including a one-shot prefetch
+        cache hit — so it always reflects the current ``_secret_marked_refs``
+        state, never whatever it was when the tree text happened to be built.
+        """
+        if self._secret_marked_refs:
+            live_secret_refs = self._secret_marked_refs & snapshot.refs.keys()
+            if live_secret_refs:
+                value_child_refs = find_value_child_refs(live_secret_refs, snapshot.refs)
+                snapshot.tree = mask_ref_values_in_tree(
+                    snapshot.tree, live_secret_refs, value_child_refs
+                )
+        return snapshot
+
     def _invalidate_page_state(self) -> None:
         """Drop snapshot cache + prefetch state.
 
@@ -3665,6 +3729,7 @@ class Browser:
         self._last_snapshot = None
         self._last_snapshot_url = None
         self._cancel_prefetch()
+        self._secret_marked_refs.clear()
 
     async def _pre_warm_snapshot(self, page: "AsyncPage", my_gen: int) -> None:  # type: ignore[name-defined]
         """Background task: compute interactive snapshot after navigation.
@@ -5290,8 +5355,15 @@ Before you return the element ref, reason about the state and elements for a sen
             When False, text is appended to whatever is already in the field.
         is_secret : bool, optional
             Set True when ``text`` is a password, token, or OTP: the value is
-            then kept out of the result message and of bridgic's logs and error
-            text. Default False. See Notes for the one sink it cannot reach.
+            then kept out of the result message, bridgic's logs and error
+            text, and any later :meth:`get_snapshot`/:meth:`get_snapshot_text`
+            call's tree (masked as ``"***"`` until this ref is filled again
+            without ``is_secret``, or the page navigates). Note that a
+            ``type="password"`` field's value is *always* masked in the
+            snapshot, independently of this flag — this only matters for a
+            secret held in a non-password field (e.g. an API-key input typed
+            as ``text``). Default False. See Notes for the one sink it cannot
+            reach.
         slowly : bool, optional
             When True, types character-by-character with ~100 ms delay between
             keystrokes, triggering per-character ``keydown``/``keyup`` events.
@@ -5317,8 +5389,9 @@ Before you return the element ref, reason about the state and elements for a sen
         Notes
         -----
         ``is_secret`` covers every sink bridgic owns - the returned message,
-        bridgic's log records, and error text bridgic raises (a Playwright
-        exception can echo back the value it was handed). It does **not** reach
+        bridgic's log records, error text bridgic raises (a Playwright
+        exception can echo back the value it was handed), and the
+        accessibility snapshot tree. It does **not** reach
         the ``arguments`` record an agent framework keeps of each tool call,
         which typically reaches a step log, an on-disk trace, and the next LLM
         prompt. Redact that at the framework boundary with
@@ -5403,6 +5476,14 @@ Before you return the element ref, reason about the state and elements for a sen
                 page = await self.get_current_page()
                 if page:
                     await page.keyboard.press("Enter")
+
+            # Layer 2 of snapshot secret-masking (see _secret_marked_refs):
+            # last-fill-wins, so a later non-secret overwrite of the same
+            # ref un-masks it.
+            if is_secret:
+                self._secret_marked_refs.add(ref)
+            else:
+                self._secret_marked_refs.discard(ref)
 
             msg = f"Input text '{text}'"
             if is_secret:
@@ -6906,9 +6987,15 @@ Before you return the element ref, reason about the state and elements for a sen
         Notes
         -----
         The summary message lists refs only and never contains a value, so what
-        a secret marker changes inside bridgic is the error path: a marked value
-        is scrubbed from the per-field error text bridgic reports and logs. Its
-        other job is to travel with the call - it does **not** reach the
+        a secret marker changes inside bridgic is the error path (a marked
+        value is scrubbed from the per-field error text bridgic reports and
+        logs) and any later :meth:`get_snapshot`/:meth:`get_snapshot_text`
+        call's tree, where a marked field's value stays masked as ``"***"``
+        until it is filled again without ``is_secret``, or the page
+        navigates. A ``type="password"`` field is always masked in the
+        snapshot regardless of this flag; the flag only matters for a secret
+        held in a non-password field. Its other job is to travel with the
+        call - it does **not** reach the
         ``arguments`` record an agent framework keeps of each tool call. Redact
         that at the framework boundary with
         :func:`bridgic.browser.redact_tool_arguments`, which honours both the
@@ -6952,6 +7039,13 @@ Before you return the element ref, reason about the state and elements for a sen
                 try:
                     await locator.fill(value)
                     filled_refs.append(ref)
+                    # Layer 2 of snapshot secret-masking: per-field flag wins
+                    # over the call-level one, matching the docstring's
+                    # "prefer per-field on a mixed form" guidance.
+                    if is_secret or bool(field.get("is_secret")):
+                        self._secret_marked_refs.add(ref)
+                    else:
+                        self._secret_marked_refs.discard(ref)
                 except BridgicBrowserError:
                     raise
                 except Exception as e:

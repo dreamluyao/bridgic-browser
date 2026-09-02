@@ -63,6 +63,8 @@ from typing import Dict, Optional, Set, List, Tuple, Any
 from dataclasses import dataclass
 from playwright.async_api import FrameLocator as AsyncFrameLocator, Page as AsyncPage, Locator as AsyncLocator
 
+from .._secrets import REDACTED
+
 logger = logging.getLogger(__name__)
 
 
@@ -472,6 +474,86 @@ class SnapshotOptions:
     """
     interactive: bool = False
     full_page: bool = True
+
+
+# A filled <input>/<textarea>'s live value reaches the tree in one of two
+# shapes, chosen by Playwright's own snapshotForAI depending on whether the
+# element has other AX children (e.g. a placeholder) alongside its value:
+#
+#   1. Inlined on the input's OWN [ref=<id>] line, as a trailing
+#      ": <value>" suffix — when the value is the element's ONLY child.
+#   2. Nested as a SEPARATE child node (role "text") with its OWN
+#      [ref=<child_id>], whose accessible name IS the value — whenever the
+#      element has another child too (a placeholder is enough to trigger
+#      this). find_value_child_refs() locates that child ref.
+#
+# These two shapes must never be masked with the same pattern applied to the
+# same ref: an input's own quoted name is its LABEL (e.g. "Password"), never
+# its value — running the quoted-name mask against the input's own ref would
+# blank the label instead of a leak. mask_ref_values_in_tree() therefore
+# takes the two ref sets separately and applies exactly one pattern to each.
+
+def _value_mask_pattern(ref_id: str) -> "re.Pattern[str]":
+    """Shape 1: trailing `[ref=<id>] [nth=<n>]: <value>` on the ref's own line."""
+    return re.compile(
+        rf'(\[ref={re.escape(ref_id)}\](?:\s*\[[^\]]*\])*): (\S.*)$',
+        re.MULTILINE,
+    )
+
+
+def _quoted_name_mask_pattern(ref_id: str) -> "re.Pattern[str]":
+    """Shape 2: a quoted accessible name immediately preceding `[ref=<id>]`.
+
+    Bridgic always emits `- {role} "{name}" [ref={ref}]` back-to-back (name
+    then ref, nothing in between — no other bracket marker can appear in
+    that gap), so anchoring the closing quote directly on `[ref=<id>]`
+    uniquely identifies this one line. Only ever call this with a
+    value-child ref (see `find_value_child_refs`) — never with an input's
+    own ref, whose quoted name is its label, not a value.
+    """
+    return re.compile(
+        rf'^(\s*-\s*\S+\s+)"(?:[^"\\]|\\.)*"(\s*\[ref={re.escape(ref_id)}\].*)$',
+        re.MULTILINE,
+    )
+
+
+def find_value_child_refs(ref_ids: Set[str], refs: Dict[str, "RefData"]) -> Set[str]:
+    """Return each ref's value-carrying child (shape 2 above), if it has one.
+
+    ``<input>``/``<textarea>`` are void DOM elements, so any ref-bearing
+    child they have in the tree IS their value node — there is nothing else
+    it could be. Returns an empty set for a ref whose value rendered inline
+    instead (shape 1): there is simply no such child to find.
+    """
+    if not ref_ids:
+        return set()
+    return {
+        child_ref for child_ref, data in refs.items()
+        if data.parent_ref in ref_ids
+    }
+
+
+def mask_ref_values_in_tree(
+    tree: str, own_ref_ids: Set[str], value_child_ref_ids: Set[str] = frozenset()
+) -> str:
+    """Blank the value of every ``tree`` line backed by these refs.
+
+    ``own_ref_ids`` — the input's own ref(s) — are masked via the shape-1
+    inline-colon-suffix pattern only. ``value_child_ref_ids`` (from
+    `find_value_child_refs`) are masked via the shape-2 quoted-name pattern
+    only. Used both for password-input detection (unconditional) and for
+    refs a caller explicitly marked ``is_secret`` (see ``Browser``). A ref
+    with nothing to redact under its pattern is simply left as-is.
+    """
+    for ref_id in own_ref_ids:
+        tree = _value_mask_pattern(ref_id).sub(
+            lambda m: f"{m.group(1)}: {REDACTED}", tree, count=1
+        )
+    for ref_id in value_child_ref_ids:
+        tree = _quoted_name_mask_pattern(ref_id).sub(
+            lambda m: f'{m.group(1)}"{REDACTED}"{m.group(2)}', tree, count=1
+        )
+    return tree
 
 
 class RoleNameTracker:
@@ -2206,9 +2288,65 @@ class SnapshotGenerator:
             filtered_snapshot, refs, options, interactive_map
         )
 
+        # Mask input[type=password] values unconditionally — regardless of
+        # whether bridgic (or anything at all, e.g. browser autofill) ever
+        # wrote to the field. See `_detect_password_refs`.
+        password_refs = await self._detect_password_refs(page, refs)
+        if password_refs:
+            value_child_refs = find_value_child_refs(password_refs, refs)
+            enhanced_tree = mask_ref_values_in_tree(
+                enhanced_tree, password_refs, value_child_refs
+            )
+
         logger.debug("Enhanced tree length: %d chars", len(enhanced_tree))
 
         return EnhancedSnapshot(tree=enhanced_tree, refs=refs)
+
+    async def _detect_password_refs(
+        self, page: AsyncPage, refs: Dict[str, RefData]
+    ) -> Set[str]:
+        """Return the subset of ``refs`` backed by a live ``input[type=password]``.
+
+        The accessibility tree has no type=password marker of its own — every
+        text-like input (including password) maps to role ``"textbox"`` — so
+        this cross-references the live DOM via each candidate's ephemeral
+        ``playwright_ref``, using the same ``aria-ref=`` locator engine as
+        `Browser.get_element_by_ref`'s fast path. Called immediately after the
+        `snapshotForAI` call that produced ``refs``, while that ephemeral
+        mapping is still guaranteed fresh, so resolution failures should be
+        rare; when one does happen (DOM mutated between the snapshot and this
+        check) that field is left unmasked by this layer rather than raising —
+        best-effort defense in depth, not a hard guarantee.
+
+        Scoped to role == "textbox" (the realistic case) rather than every ref
+        on the page, to avoid an aria-ref round trip per non-text element.
+        """
+        candidates = [
+            (ref_id, data) for ref_id, data in refs.items()
+            if data.role == 'textbox' and data.playwright_ref
+        ]
+        if not candidates:
+            return set()
+
+        async def _check(ref_id: str, data: RefData) -> Optional[str]:
+            try:
+                scope: "AsyncPage | AsyncFrameLocator" = page
+                if data.frame_path:
+                    for local_nth in data.frame_path:
+                        scope = scope.frame_locator("iframe").nth(local_nth)
+                is_password = await scope.locator(
+                    f"aria-ref={data.playwright_ref}"
+                ).evaluate("el => el.tagName === 'INPUT' && el.type === 'password'")
+                return ref_id if is_password else None
+            except Exception:
+                logger.debug(
+                    "[_detect_password_refs] aria-ref check failed for ref=%s",
+                    ref_id, exc_info=True,
+                )
+                return None
+
+        results = await asyncio.gather(*(_check(r, d) for r, d in candidates))
+        return {r for r in results if r}
 
     async def get_enhanced_snapshot_async(
         self,

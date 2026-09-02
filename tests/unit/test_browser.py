@@ -1350,6 +1350,106 @@ class TestInvalidatePageState:
         assert browser._prefetch_gen == gen_before + 1
 
 
+class TestSecretRefMasking:
+    """Layer 2 of snapshot secret-masking: a ref filled via
+    input_text_by_ref/fill_form with is_secret=True stays masked in
+    get_snapshot()/get_snapshot_text() output until it is either filled
+    again without is_secret, or the page navigates. Layer 1
+    (input[type=password], unconditional) lives in SnapshotGenerator and is
+    covered by tests/unit/test_snapshot_parse.py::TestDetectPasswordRefs.
+    """
+
+    def test_mask_secret_refs_in_tree_blanks_marked_ref(self):
+        from bridgic.browser.session._snapshot import EnhancedSnapshot
+
+        browser = Browser()
+        browser._secret_marked_refs = {"abc12345"}
+        snapshot = EnhancedSnapshot(
+            tree='- textbox "Token" [ref=abc12345]: hunter2',
+            refs={"abc12345": MagicMock()},
+        )
+
+        result = browser._mask_secret_refs_in_tree(snapshot)
+
+        assert "hunter2" not in result.tree
+        assert "[ref=abc12345]" in result.tree
+
+    def test_mask_secret_refs_in_tree_ignores_stale_ref_not_in_snapshot(self):
+        """A ref left over from a previous page (not yet cleared by
+        navigation) must not affect a snapshot that doesn't contain it."""
+        from bridgic.browser.session._snapshot import EnhancedSnapshot
+
+        browser = Browser()
+        browser._secret_marked_refs = {"stale0001"}
+        snapshot = EnhancedSnapshot(
+            tree='- textbox "Username" [ref=e1111111]: alice',
+            refs={"e1111111": MagicMock()},
+        )
+
+        result = browser._mask_secret_refs_in_tree(snapshot)
+
+        assert result.tree == '- textbox "Username" [ref=e1111111]: alice'
+
+    def test_mask_secret_refs_in_tree_noop_when_none_marked(self):
+        from bridgic.browser.session._snapshot import EnhancedSnapshot
+
+        browser = Browser()
+        snapshot = EnhancedSnapshot(tree='- button "Submit" [ref=e1]', refs={})
+
+        result = browser._mask_secret_refs_in_tree(snapshot)
+
+        assert result is snapshot
+        assert result.tree == '- button "Submit" [ref=e1]'
+
+
+class TestSecretRefInvalidation:
+    """_secret_marked_refs must be cleared wherever _last_snapshot already
+    is (proactively, before bridgic's own navigation-causing tool methods),
+    plus reactively via `_arm_secret_ref_invalidation` for navigations none
+    of those methods initiated (e.g. a link click, or the page's own
+    JS-driven redirect)."""
+
+    def test_invalidate_page_state_clears_secret_marked_refs(self):
+        browser = Browser()
+        browser._secret_marked_refs = {"abc12345"}
+
+        browser._invalidate_page_state()
+
+        assert browser._secret_marked_refs == set()
+
+    def test_arm_secret_ref_invalidation_clears_on_main_frame_navigation(self):
+        browser = Browser()
+        browser._secret_marked_refs = {"abc12345"}
+
+        fake_page = MagicMock()
+        registered = {}
+        fake_page.on.side_effect = lambda event, handler: registered.setdefault(event, handler)
+        fake_page.main_frame = MagicMock()
+
+        browser._arm_secret_ref_invalidation(fake_page)
+        # Simulate Playwright firing framenavigated for the main frame.
+        registered["framenavigated"](fake_page.main_frame)
+
+        assert browser._secret_marked_refs == set()
+
+    def test_arm_secret_ref_invalidation_ignores_non_main_frame_navigation(self):
+        """A cross-origin iframe navigating must not clear the top-level
+        page's tracked secret refs."""
+        browser = Browser()
+        browser._secret_marked_refs = {"abc12345"}
+
+        fake_page = MagicMock()
+        registered = {}
+        fake_page.on.side_effect = lambda event, handler: registered.setdefault(event, handler)
+        fake_page.main_frame = MagicMock()
+        other_frame = MagicMock()
+
+        browser._arm_secret_ref_invalidation(fake_page)
+        registered["framenavigated"](other_frame)
+
+        assert browser._secret_marked_refs == {"abc12345"}
+
+
 class TestSingleVideoRecorderClose:
     """Tests verifying single-stream video recorder lifecycle during close().
 

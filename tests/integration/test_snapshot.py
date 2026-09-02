@@ -747,6 +747,111 @@ class TestSnapshotAfterStateChange:
             pytest.fail("China option not found in post-selection snapshot")
 
 
+# ==================== Secret Masking ====================
+
+class TestSecretMasking:
+    """The snapshot tree must never leak a password/secret value in
+    plaintext (see CLAUDE.md 'Secret values (is_secret)').
+
+    Layer 1 - input[type=password] is masked unconditionally, regardless of
+    whether bridgic's own fill tools were ever used on it.
+    Layer 2 - a field explicitly filled via input_text_by_ref/fill_form with
+    is_secret=True is masked too, until it's filled again without
+    is_secret, or the page navigates.
+    """
+
+    @pytest.mark.asyncio
+    async def test_password_field_masked_without_is_secret(self, browser):
+        """Layer 1 closes the reported bug even when the caller never sets
+        is_secret - a type=password field is always masked."""
+        snap1 = await browser.get_snapshot_text(interactive=True, full_page=True)
+        refs1 = parse_snapshot(snap1)
+        pw_ref = find_ref(refs1, "textbox", "Password")
+        assert pw_ref is not None
+
+        await browser.input_text_by_ref(pw_ref, "hunter2")  # no is_secret
+
+        snap2 = await browser.get_snapshot_text(interactive=True, full_page=True)
+        assert "hunter2" not in snap2
+        # The masked value can land on the textbox's own line (inline
+        # colon-suffix) or on a separate value-child node's line (promoted
+        # to that node's accessible name) - which shape Playwright chooses
+        # depends on whether the field has another AX child alongside its
+        # value (e.g. a placeholder). Either way "***" must appear
+        # somewhere and the textbox itself must still be present and
+        # correctly labeled "Password" (never itself blanked).
+        assert "***" in snap2
+        refs2 = parse_snapshot(snap2)
+        pw_ref2 = find_ref(refs2, "textbox", "Password")
+        assert pw_ref2 is not None
+
+    @pytest.mark.asyncio
+    async def test_password_field_masked_even_when_filled_outside_bridgic(self, browser):
+        """Layer 1 must catch a value that arrived via any means (browser
+        autofill, page JS) - not just bridgic's own fill tools."""
+        snap1 = await browser.get_snapshot_text(interactive=True, full_page=True)
+        refs1 = parse_snapshot(snap1)
+        pw_ref = find_ref(refs1, "textbox", "Password")
+        assert pw_ref is not None
+
+        locator = await browser.get_element_by_ref(pw_ref)
+        await locator.evaluate(
+            "(el, v) => { el.value = v; "
+            "el.dispatchEvent(new Event('input', {bubbles: true})); }",
+            "sneaky-autofilled-secret",
+        )
+
+        snap2 = await browser.get_snapshot_text(interactive=True, full_page=True)
+        assert "sneaky-autofilled-secret" not in snap2
+
+    @pytest.mark.asyncio
+    async def test_non_password_field_masked_with_is_secret(self, browser):
+        """Layer 2: an explicit is_secret fill on a non-password
+        (type=text) field is masked too."""
+        snap1 = await browser.get_snapshot_text(interactive=True, full_page=True)
+        refs1 = parse_snapshot(snap1)
+        user_ref = find_ref(refs1, "textbox", "Username")
+        assert user_ref is not None
+
+        await browser.input_text_by_ref(user_ref, "api-key-abc123", is_secret=True)
+
+        snap2 = await browser.get_snapshot_text(interactive=True, full_page=True)
+        assert "api-key-abc123" not in snap2
+
+    @pytest.mark.asyncio
+    async def test_non_password_field_unmasked_after_non_secret_refill(self, browser):
+        """Last-fill-wins: a later fill without is_secret un-masks the field."""
+        snap1 = await browser.get_snapshot_text(interactive=True, full_page=True)
+        refs1 = parse_snapshot(snap1)
+        user_ref = find_ref(refs1, "textbox", "Username")
+        assert user_ref is not None
+
+        await browser.input_text_by_ref(user_ref, "secret-value", is_secret=True)
+        await browser.input_text_by_ref(user_ref, "plain-value", is_secret=False)
+
+        snap2 = await browser.get_snapshot_text(interactive=True, full_page=True)
+        assert "plain-value" in snap2
+        assert "secret-value" not in snap2
+
+    @pytest.mark.asyncio
+    async def test_secret_marked_refs_cleared_on_navigation(self, browser):
+        """The framenavigated listener (_arm_secret_ref_invalidation) must
+        clear tracked secret refs on a real navigation, not just when a
+        bridgic tool method proactively invalidates page state."""
+        snap1 = await browser.get_snapshot_text(interactive=True, full_page=True)
+        refs1 = parse_snapshot(snap1)
+        user_ref = find_ref(refs1, "textbox", "Username")
+        assert user_ref is not None
+
+        await browser.input_text_by_ref(user_ref, "secret-value", is_secret=True)
+        assert browser._secret_marked_refs
+
+        await browser.navigate_to(f"file://{TEST_PAGE_PATH.absolute()}")
+        await asyncio.sleep(0.3)
+
+        assert browser._secret_marked_refs == set()
+
+
 # ==================== Edge Cases ====================
 
 class TestEdgeCases:

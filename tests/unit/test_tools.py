@@ -592,6 +592,39 @@ class TestElementInteractionTools:
         assert "plain_value" in str(exc_info.value)
 
     @pytest.mark.asyncio
+    async def test_input_text_by_ref_marks_ref_secret_for_snapshot_masking(self, mock_browser):
+        """is_secret=True adds the ref to _secret_marked_refs, which
+        get_snapshot() consults to mask the value (Layer 2 - see
+        Browser._mask_secret_refs_in_tree)."""
+
+        mock_locator = MagicMock()
+        mock_locator.clear = AsyncMock()
+        mock_locator.fill = AsyncMock()
+        mock_locator.is_visible = AsyncMock(return_value=True)
+        mock_browser.get_element_by_ref.return_value = mock_locator
+        mock_browser._secret_marked_refs = set()
+
+        await Browser.input_text_by_ref(mock_browser, "e1", "hunter2", is_secret=True)
+
+        assert mock_browser._secret_marked_refs == {"e1"}
+
+    @pytest.mark.asyncio
+    async def test_input_text_by_ref_unmarks_ref_on_non_secret_overwrite(self, mock_browser):
+        """Last-fill-wins: overwriting a previously-secret ref without
+        is_secret un-masks it."""
+
+        mock_locator = MagicMock()
+        mock_locator.clear = AsyncMock()
+        mock_locator.fill = AsyncMock()
+        mock_locator.is_visible = AsyncMock(return_value=True)
+        mock_browser.get_element_by_ref.return_value = mock_locator
+        mock_browser._secret_marked_refs = {"e1"}
+
+        await Browser.input_text_by_ref(mock_browser, "e1", "public_value", is_secret=False)
+
+        assert mock_browser._secret_marked_refs == set()
+
+    @pytest.mark.asyncio
     async def test_hover_element_by_ref(self, mock_browser):
         """Test hover_element_by_ref — not covered (bounding_box None → direct hover)."""
 
@@ -1201,6 +1234,49 @@ class TestKeyboardTools:
         result = await Browser.fill_form(mock_browser, [{"ref": "e1", "value": "plain_value"}])
 
         assert "plain_value" in result
+
+    @pytest.mark.asyncio
+    async def test_fill_form_marks_per_field_secret_for_snapshot_masking(self, mock_browser):
+        """Only the field carrying is_secret feeds _secret_marked_refs, so a
+        username stays unmasked while the password next to it is masked."""
+
+        mock_locator = MagicMock()
+        mock_locator.fill = AsyncMock()
+        mock_browser.get_element_by_ref.return_value = mock_locator
+        mock_browser._secret_marked_refs = set()
+
+        fields = [
+            {"ref": "e1", "value": "alice"},
+            {"ref": "e2", "value": "hunter2", "is_secret": True},
+        ]
+        await Browser.fill_form(mock_browser, fields)
+
+        assert mock_browser._secret_marked_refs == {"e2"}
+
+    @pytest.mark.asyncio
+    async def test_fill_form_call_level_is_secret_marks_every_field(self, mock_browser):
+        mock_locator = MagicMock()
+        mock_locator.fill = AsyncMock()
+        mock_browser.get_element_by_ref.return_value = mock_locator
+        mock_browser._secret_marked_refs = set()
+
+        fields = [{"ref": "e1", "value": "a"}, {"ref": "e2", "value": "b"}]
+        await Browser.fill_form(mock_browser, fields, is_secret=True)
+
+        assert mock_browser._secret_marked_refs == {"e1", "e2"}
+
+    @pytest.mark.asyncio
+    async def test_fill_form_unmarks_ref_on_non_secret_refill(self, mock_browser):
+        """Last-fill-wins, same as input_text_by_ref."""
+
+        mock_locator = MagicMock()
+        mock_locator.fill = AsyncMock()
+        mock_browser.get_element_by_ref.return_value = mock_locator
+        mock_browser._secret_marked_refs = {"e1"}
+
+        await Browser.fill_form(mock_browser, [{"ref": "e1", "value": "now_public"}])
+
+        assert mock_browser._secret_marked_refs == set()
 
 
 # ==================== Screenshot Tools Tests ====================
