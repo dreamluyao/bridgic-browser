@@ -118,7 +118,7 @@ Config precedence (low -> high):
 
 | Source | Notes |
 |---|---|
-| Defaults | `headless=True`, `clear_user_data=False` (persistent profile at `$BRIDGIC_HOME/bridgic-browser/user_data/`) |
+| Defaults | `headless=True`, `clear_user_data=False` (persistent profile at `$BRIDGIC_HOME/bridgic-browser/user_data/`; keep it false, PDF downloading depends on it) |
 | `$BRIDGIC_HOME/bridgic-browser/bridgic-browser.json` | User-level persistent config (default `~/.bridgic/...`) |
 | `./bridgic-browser.json` | Project-specific config (daemon startup cwd) |
 | `BRIDGIC_BROWSER_JSON` | Full JSON override for any Browser parameters (e.g. `{"headless":false}`) |
@@ -165,7 +165,7 @@ For how to enable CDP on the target Chrome (Chrome 144+ `chrome://inspect/#remot
 - **`eval-on` CODE must be an arrow or named function** that accepts the element as its argument:
   - `bridgic-browser eval-on @8d4b03a9 "(el) => el.textContent"` ✓
   - `bridgic-browser eval-on @8d4b03a9 "el.textContent"` ✗ (not a function)
-- **PDF links download automatically**: the built-in PDF viewer is disabled. Clicking a PDF link saves the file to `~/Downloads` (non-CDP) or the configured `downloads_path` — no in-browser viewer opens.
+- **PDF links download automatically — unless the session is ephemeral**: the viewer is disabled by a preference written into the persistent profile at launch, so it applies to the default persistent session. Start with `--clear-user-data` (or `{"clear_user_data": true}`) and the preference is never written: the viewer opens and nothing downloads. On the persistent session, clicking a PDF link saves the file to `~/Downloads` (non-CDP) or the configured `downloads_path`.
 - **`window.print()` is intercepted**: pages that call `window.print()` never show a print dialog. The output is silently saved as `print-YYYYMMDD-HHMMSS.pdf` in the configured `downloads_path` (or a temp file if unset). In headless mode, `window.print()` would otherwise be a silent no-op.
 
 ## When to Load Other References

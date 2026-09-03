@@ -27,7 +27,7 @@ CLI commands and SDK tool methods are **intentionally aligned**:
 
 State model difference:
 - **CLI**: browser state lives in the daemon process, persists across multiple short-lived CLI invocations, resets on `close`. Browser profile is saved to `$BRIDGIC_HOME/bridgic-browser/user_data/` by default; use `--clear-user-data` on `open`/`search` to start with no profile. Set `BRIDGIC_HOME` to run multiple independent instances.
-- **SDK**: browser state lives in the Python process, scoped to the `Browser` object lifetime (`async with Browser(...) as browser:`). Profile is also persisted by default; use `Browser(clear_user_data=True)` for an ephemeral session. For multi-instance isolation, use `Browser(user_data_dir=...)` per instance; for full process-level isolation set `BRIDGIC_HOME` env var before spawning a subprocess.
+- **SDK**: browser state lives in the Python process, scoped to the `Browser` object lifetime (`async with Browser(...) as browser:`). Profile is also persisted by default; `Browser(clear_user_data=True)` gives an ephemeral session, at the cost of PDF downloading (see `sdk-guide.md`). For isolation — per run or per instance — use `Browser(user_data_dir=...)` instead; for full process-level isolation set `BRIDGIC_HOME` env var before spawning a subprocess.
 
 This model is the foundation of all correspondence in this guide.
 

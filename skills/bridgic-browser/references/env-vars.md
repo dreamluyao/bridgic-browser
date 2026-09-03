@@ -73,7 +73,7 @@ subprocess.Popen(
 Notes:
 - Config file precedence (SDK + CLI, lowest -> highest): defaults, `$BRIDGIC_HOME/bridgic-browser/bridgic-browser.json`, `./bridgic-browser.json`, `BRIDGIC_BROWSER_JSON`.
 - To start the daemon in headed mode, pass `--headed` to `bridgic-browser open` / `bridgic-browser search`, or set `{"headless": false}` in `BRIDGIC_BROWSER_JSON`.
-- To start with an ephemeral (no persistent profile) session, pass `--clear-user-data` to `bridgic-browser open` / `bridgic-browser search`, or set `{"clear_user_data": true}` in `BRIDGIC_BROWSER_JSON`. These flags are only meaningful when starting a new daemon; they are ignored if a session is already running.
+- To start with an ephemeral (no persistent profile) session, pass `--clear-user-data` to `bridgic-browser open` / `bridgic-browser search`, or set `{"clear_user_data": true}` in `BRIDGIC_BROWSER_JSON`. These flags are only meaningful when starting a new daemon; they are ignored if a session is already running. **For a clean profile rather than no profile, set `user_data_dir` instead** — ephemeral sessions do not get the PDF-download preference (see `sdk-guide.md`).
 - To connect to an existing Chrome via CDP, pass `--cdp` to `bridgic-browser open` or `bridgic-browser search`, or set the `BRIDGIC_CDP` env var. The `--cdp` flag accepts a port number, `ws://`/`wss://` URL, `http://host:port`, or `auto`. Full enablement and behavior reference: `cdp-mode.md`.
 - When `headless=false` (headed mode) with stealth enabled and neither `channel` nor `executable_path` is specified, the daemon **auto-switches to system Chrome** (`channel=”chrome”`) if detected on the machine. This avoids Playwright’s bundled “Chrome for Testing” which is blocked by Google OAuth and shows a “test” label in the macOS Dock. If system Chrome is not installed, it falls back to Chrome for Testing.
 
@@ -88,7 +88,7 @@ Notes:
 | `headless` | `true | false` | Default `true`. If `devtools=true`, headless is forced to `false`. |
 | `viewport` | `{ "width": int, "height": int }` or `null` | Default `1600x900` when `no_viewport` is not set. |
 | `user_data_dir` | string (path) | Custom path for persistent profile. Ignored when `clear_user_data=true`. |
-| `clear_user_data` | `true | false` | Default `false`. If `true`, use ephemeral session (`launch`+`new_context`, no profile saved). If `false`, use persistent profile (defaults to `$BRIDGIC_HOME/bridgic-browser/user_data/`). |
+| `clear_user_data` | `true | false` | Default `false`. If `true`, use ephemeral session (`launch`+`new_context`, no profile saved, **and no PDF-download preference**). If `false`, use persistent profile (defaults to `$BRIDGIC_HOME/bridgic-browser/user_data/`). |
 | `cdp` | string | Connect to existing Chrome via CDP instead of launching. Accepts any format supported by `resolve_cdp_input()` (port, `ws://`/`wss://` URL, `http://host:port`, `auto`); non-WebSocket values are auto-resolved at startup. Can be set via config JSON, `BRIDGIC_CDP` env var, or `--cdp` CLI flag. Full enablement and behavior reference: `cdp-mode.md`. |
 | `stealth` | `true | false` or object | Object uses the StealthConfig keys below. |
 | `channel` | string | Examples: `"chrome"`, `"msedge"`, `"chromium"`. |
@@ -197,4 +197,4 @@ Details:
 - Requires an active page.
 - LocalStorage is applied to the current page origin; multi-origin storage may require navigating per origin before restore.
 - Playwright can include IndexedDB in storage state, but the wrapper does not expose that flag.
-- For long-lived login across restarts, the default `Browser()` already saves state persistently to `$BRIDGIC_HOME/bridgic-browser/user_data/` (default `~/.bridgic/bridgic-browser/user_data/`). Use `Browser(user_data_dir="./my-profile")` to choose a custom profile path, or `Browser(clear_user_data=True)` to opt out of persistence.
+- For long-lived login across restarts, the default `Browser()` already saves state persistently to `$BRIDGIC_HOME/bridgic-browser/user_data/` (default `~/.bridgic/bridgic-browser/user_data/`). Use `Browser(user_data_dir="./my-profile")` to choose a custom profile path, or `Browser(clear_user_data=True)` to opt out of persistence — the latter also opts out of PDF downloading.

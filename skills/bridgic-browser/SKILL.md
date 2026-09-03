@@ -22,6 +22,8 @@ bash "skills/bridgic-browser/scripts/install-deps.sh" "$PWD"
 
 The script checks uv availability, initializes a uv project if needed, installs missing packages, and ensures Playwright chromium is available.
 
+`bridgic-browser` is served by the private pypiserver at `http://us-papy-oc:4000/simple/`, not by public PyPI; the script writes that index into `pyproject.toml` before installing. Set `BRIDGIC_DEV_INDEX` to point at a different server. An install that fails to fetch is almost always the index being unreachable, not a missing package.
+
 ## Strategies & Guidelines (Important!!)
 
 Notes:
@@ -32,7 +34,7 @@ Notes:
 - If login, verification, or authorization is required during exploration, pause and ask the user to complete it manually, unless the user explicitly provides instructions in the task.
 - To avoid operating on websites too frequently, maintain human-like access intervals during both exploration and coding. You may simulate random wait times to reduce the risk of being blocked. Note: the `bridgic-browser wait` command parameter is in **seconds**, not milliseconds; for example, `bridgic-browser wait 2` or `bridgic-browser wait 3.2`.
 - After finishing exploration and code writing, automatically run testing/validation.
-- **PDF links download automatically**: the built-in PDF viewer is disabled; clicking a PDF link saves the file to `downloads_path` (or `~/Downloads` in CLI mode) instead of opening an in-browser viewer. Access downloaded files via `browser.downloaded_files` in the SDK.
+- **PDF links download automatically — on the persistent profile only**: the built-in PDF viewer is disabled by writing `plugins.always_open_pdf_externally` into the profile before launch, which happens on the persistent-context path and nowhere else. With `clear_user_data=True` (ephemeral) or in CDP mode the preference is never written, the viewer stays on, and a PDF link opens a viewer tab instead of downloading — so anything waiting on the download hangs until it times out. On the persistent path, clicking a PDF link saves the file to `downloads_path` (or `~/Downloads` in CLI mode). Access downloaded files via `browser.downloaded_files` in the SDK.
 - **window.print() is intercepted**: `window.print()` never shows a dialog. It silently saves a `print-<timestamp>.pdf` to `downloads_path` and appends it to `browser.downloaded_files`. In headless mode this is the only way to get print output — the native call is a no-op without the intercept.
 - **Credentials**: when filling a password, token, or OTP, pass `--secret` (CLI: `fill`, `type`, `fill-form`) or `is_secret=True` (SDK), or `"is_secret": true` on an individual `fill-form` field. It keeps the value out of the command response and bridgic's logs. It does **not** scrub an agent framework's own record of the tool arguments, your shell history, or a snapshot in which the page echoes the value back - see [cli-sdk-api-mapping.md](references/cli-sdk-api-mapping.md#secret-values-is_secret).
 - **CDP mode tab visibility**: when attached via `--cdp` to a user's running Chrome, `tabs` / `switch-tab` / `close-tab` only see pages bridgic itself opened (the initial blank tab plus anything spawned from it via `new-tab` or a click on a `target="_blank"` link). The user's other tabs are deliberately invisible to bridgic — never assume you can `switch-tab` into them. To work with such a tab, ask the user to navigate to it through bridgic, or use `new-tab <url>`.
@@ -63,7 +65,7 @@ Reference files cover all use cases. Load only the one(s) relevant to the task:
 - Ref-based actions depend on the latest snapshot.
 - After navigation or major DOM updates, refs can become stale; refresh snapshot before ref actions.
 - CLI keeps state in a daemon session across invocations. Set `BRIDGIC_HOME` env var to run multiple independent daemon instances (each with its own socket, logs, and user data).
-- SDK keeps state in the Python process/context. By default, browser profile (cookies, session) is persisted to `$BRIDGIC_HOME/bridgic-browser/user_data/` (default `~/.bridgic/...`); pass `clear_user_data=True` to `Browser()` for an ephemeral session.
+- SDK keeps state in the Python process/context. By default, browser profile (cookies, session) is persisted to `$BRIDGIC_HOME/bridgic-browser/user_data/` (default `~/.bridgic/...`); pass `clear_user_data=True` to `Browser()` for an ephemeral session — but **to isolate a run, give it a fresh `user_data_dir` instead**: ephemeral sessions lose the PDF-download preference (see PDF links above).
 - Use exact command/method names from references; do not invent aliases.
 
 ## Bridge Workflow: CLI Actions -> Python Code

@@ -49,7 +49,7 @@ Notes:
 - `async with Browser(...)` calls `_start()` in `__aenter__` and `close()` in `__aexit__` automatically.
 - Without the context manager, the browser starts lazily: `navigate_to(...)` and `search(...)` call `_ensure_started()` on first invocation.
 - `get_snapshot(...)` returns `EnhancedSnapshot` (never `None`); raises `StateError` if no active page, `OperationError` if generation fails.
-- **Default session is persistent**: `Browser()` (no args) saves the browser profile to `$BRIDGIC_HOME/bridgic-browser/user_data/` (default `~/.bridgic/bridgic-browser/user_data/`). Use `Browser(clear_user_data=True)` for an ephemeral session with no saved profile. Use `Browser(user_data_dir="./my-profile")` to specify a custom profile path.
+- **Default session is persistent**: `Browser()` (no args) saves the browser profile to `$BRIDGIC_HOME/bridgic-browser/user_data/` (default `~/.bridgic/bridgic-browser/user_data/`). Use `Browser(user_data_dir="./my-profile")` to specify a custom profile path. `Browser(clear_user_data=True)` gives an ephemeral session with no saved profile — **it is not the way to isolate a run**: it takes a different launch path that never writes the PDF-download preference, so PDF links open a viewer instead of downloading. A fresh `user_data_dir` isolates without that cost.
 
 ## API Division: Raw Methods vs Tool Methods
 
@@ -192,8 +192,11 @@ spec.tool_parameters["properties"]["text"]["x-bridgic-secret"]
 # {"gated_by": "is_secret"}
 ```
 
-No framework acts on that marker today; it is a contract for one to read, not
-automatic redaction.
+`bridgic-amphibious` reads this marker and redacts the recorded arguments
+automatically, so `is_secret=True` is sufficient there with no per-project wiring
+(see its `SKILL.md` → Secrets in Tool Arguments). Never overwrite the marker on a
+generated spec: replacing the gate dict with `True` drops the gate and blanks
+every text input.
 
 ## Non-Obvious SDK Behavior
 
@@ -205,7 +208,7 @@ automatic redaction.
 - `take_screenshot(filename="path.png")` writes file and returns a status string.
 - `verify_element_visible` uses `(role, accessible_name)` rather than ref.
 - `start_video` must run before `stop_video`; `stop_video` stops the recorder and saves the `.webm` file immediately — no page close is needed.
-- **PDF links download automatically**: the built-in PDF viewer is disabled. Clicking a PDF link triggers a file download tracked in `browser.downloaded_files` instead of opening an in-browser viewer.
+- **PDF links download automatically — on the persistent profile only**: the viewer is disabled by writing `plugins.always_open_pdf_externally` into the profile before launch (`_ensure_pdf_download_preference`), and that call sits inside the persistent-context branch of `Browser._start`. `clear_user_data=True` and CDP mode never reach it, so the viewer stays on and a PDF link opens a tab instead of downloading. Where it is written, clicking a PDF link triggers a file download tracked in `browser.downloaded_files`. **To isolate a run, give it a fresh `user_data_dir`, not an ephemeral session** — otherwise you trade PDF downloading for the isolation.
 - **`window.print()` is intercepted**: calling `window.print()` (or any page script that calls it) never opens a print dialog. The result is saved as `print-YYYYMMDD-HHMMSS.pdf` in `downloads_path` (or a temp file if unset) and appended to `browser.downloaded_files` with `file_type="pdf"`. Works in both headless (otherwise a silent no-op) and headed (otherwise a blocking dialog) modes.
 - **Multi-instance isolation**: use `user_data_dir` to give each `Browser` its own persistent profile. Internal paths (tmp, snapshot) are shared but collision-free (all filenames use `mkstemp` or timestamp+random). For full process-level isolation (separate config, logs, socket), set `BRIDGIC_HOME` env var before spawning a subprocess — see `env-vars.md`.
 
