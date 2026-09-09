@@ -1,4 +1,4 @@
-"""Central timeout constants for bridgic-browser.
+﻿"""Central timeout constants for bridgic-browser.
 
 Every timeout here is the total budget for one logical operation. They are
 named after *what* the budget covers, not *where* the call site is, so the
@@ -175,6 +175,24 @@ command queued on the daemon. Capping at 10 s keeps the CLI responsive.
 The SDK default and the CLI daemon default are the same 10 s. Raise it via
 ``BRIDGIC_CLICK_TIMEOUT`` when a test needs to accommodate a slow-starting
 SPA; lower it for tighter bail-out.
+"""
+
+REF_RESOLVE_S: float = _float_env("BRIDGIC_REF_RESOLVE_TIMEOUT", 10.0)
+"""Bounded retry window for resolving a snapshot ref to a live locator.
+
+``get_element_by_ref`` looks up a ref against ``_last_snapshot`` — a single
+point-in-time accessibility tree. A ref that hasn't rendered yet (the
+snapshot was taken a beat before the element appeared) fails on the very
+first lookup with no chance to catch up. This budget lets ref-based tools
+retry (re-snapshotting each attempt) instead of raising ``REF_NOT_AVAILABLE``
+on a race that resolves a few hundred milliseconds later.
+
+This is a safety net for small timing gaps, not a substitute for gating on
+content that is known to load slowly — ``wait_for_element`` covers that case
+with an explicit, caller-chosen timeout. Zero-cost on the success path: it
+only adds latency when the first attempt has already failed. Override with
+``BRIDGIC_REF_RESOLVE_TIMEOUT``; set to ``0`` to restore the old fail-fast
+behavior.
 """
 
 FALLBACK_DISPATCH_TIMEOUT_MS: int = int(

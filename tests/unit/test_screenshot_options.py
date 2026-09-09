@@ -35,7 +35,7 @@ def browser_with_mocks(monkeypatch):
     async def _get_page():
         return page
 
-    async def _get_el(ref: str):
+    async def _get_el(ref: str, **_kwargs):
         return locator
 
     monkeypatch.setattr(b, "get_current_page", _get_page)

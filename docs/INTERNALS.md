@@ -264,6 +264,30 @@ STRUCTURAL_NOISE child-anchor path (strategy 5) detail:
     c) fallback: get_by_role(role) (returns 0 results for implicit generic — last resort)
 ```
 
+### 11. Bounded resolution retry in `get_element_by_ref()`
+
+`get_element_by_ref(ref, timeout: float = 0.0, _fallback_depth: int = 0)` wraps the two-phase lookup above (extracted, unmodified, into `_get_element_by_ref_once()`) in a polling loop:
+
+```
+attempt = _get_element_by_ref_once(ref)
+if attempt is not None or timeout <= 0 or _fallback_depth > 0:
+    return attempt          # original single-shot behavior — zero-cost on the success path
+
+deadline = now() + timeout
+while now() < deadline:
+    sleep(min(0.25, remaining))
+    get_snapshot()           # refresh _last_snapshot — a ref missing from it can't
+                              # be found by retrying the same lookup against stale data
+    attempt = _get_element_by_ref_once(ref)
+    if attempt is not None:
+        return attempt
+return None
+```
+
+Why re-snapshot on every poll tick rather than just re-querying the existing locator: a ref that isn't in `_last_snapshot.refs` at all (the target hadn't rendered yet when the snapshot was taken) has no CSS-rebuild strategy metadata to retry against — Phase 2 needs `RefData.role/name/nth/frame_path` from *some* snapshot that actually captured the element. Because bridgic refs are content-addressed (stable across snapshots for the same structural identity — see §7), a later snapshot taken once the element has rendered reproduces the same ref value, so the retry loop's next `_get_element_by_ref_once()` call finds it.
+
+`_fallback_depth > 0` disables retry: that path is the ambiguity-recovery recursion inside `_get_element_by_ref_once` itself (child-ref fallback for an unnamed container), not a fresh top-level call — polling there would multiply attempts without changing what's being resolved. Every `*_by_ref` tool method passes `timeout=_timeouts.REF_RESOLVE_S` (default 5s, env `BRIDGIC_REF_RESOLVE_TIMEOUT`); `verify_value` / `verify_element_state` intentionally keep the `timeout=0.0` default since their contract is "check the current state now," not "wait for it."
+
 ---
 
 ## Covered-element Check
@@ -549,7 +573,7 @@ Save path: `self._downloads_path / "print-<timestamp>.pdf"` if `downloads_path` 
 - Signal handling uses `loop.add_signal_handler()` (asyncio-safe).
 
 ### Commands (`_commands.py`)
-- 67 Click commands in 15 sections via `SectionedGroup`.
+- 68 Click commands in 15 sections via `SectionedGroup`.
 - `scroll` uses `--dy`/`--dx` options (not positional) to support negative values.
 - `screenshot`/`pdf`/`upload`/`storage-save`/`storage-load`/`trace-stop` call `os.path.abspath()` on the client side before sending (daemon cwd may differ).
 - `snapshot` supports `-i`/`--interactive`, `-f/-F`/`--full-page/--no-full-page`, `-l`/`--limit` (default 10000), and `-s`/`--file` (overflow file path); it delegates to `browser.get_snapshot_text()`.

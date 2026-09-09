@@ -49,7 +49,7 @@ bridgic-browser close
 | Evaluate | `eval`, `eval-on` |
 | Keyboard | `press`, `type`, `key-down`, `key-up` |
 | Mouse | `scroll`, `mouse-click`, `mouse-move`, `mouse-drag`, `mouse-down`, `mouse-up` |
-| Wait | `wait` |
+| Wait | `wait`, `wait-element` |
 | Capture | `screenshot`, `pdf` |
 | Network | `network-start`, `network`, `network-stop`, `wait-network` |
 | Dialog | `dialog-setup`, `dialog`, `dialog-remove` |
@@ -96,6 +96,11 @@ bridgic-browser scroll --dx 200        # scroll right 200px
 bridgic-browser wait 2.5 # wait for 2.5 seconds
 bridgic-browser wait "Submit"
 bridgic-browser wait --gone "Loading"
+
+# Wait for a specific element to reach a state before the next action/read —
+# never fails on a miss; prints READY / TIMEOUT: ... / AMBIGUOUS: ... and exits 0
+bridgic-browser wait-element button Login
+bridgic-browser wait-element button Continue --state enabled --timeout 20
 
 # Network capture flow
 bridgic-browser network-start
@@ -160,6 +165,7 @@ For how to enable CDP on the target Chrome (Chrome 144+ `chrome://inspect/#remot
   - `bridgic-browser wait 2.5` — wait for 2.5 seconds
   - `bridgic-browser wait "Submit"` — wait until "Submit" appears
   - `bridgic-browser wait --gone "Loading"` — wait until "Loading" disappears (`--gone` only works with a text argument)
+- **`wait-element` never fails the command on a miss**: unlike every `verify-*` command, `bridgic-browser wait-element ROLE NAME [--state STATE] [--timeout S]` always exits `0` and prints `READY`, `TIMEOUT: ...`, or `AMBIGUOUS: ...` — read the printed text to decide what to do next rather than checking the exit code. Prefer it over a fixed-duration `wait` before an action or a data read that depends on a specific element having rendered.
 - **`type` requires a focused element**: `type` sends keystrokes at the current cursor position. Run `bridgic-browser click @<ref>` or `bridgic-browser focus @<ref>` on the target input first.
 - **`mouse-move`, `mouse-click`, `mouse-drag` use viewport pixel coordinates** measured from the top-left corner of the browser viewport. Example: `bridgic-browser mouse-click 500 300`.
 - **`eval-on` CODE must be an arrow or named function** that accepts the element as its argument:

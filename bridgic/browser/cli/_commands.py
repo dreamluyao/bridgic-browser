@@ -602,6 +602,37 @@ def cmd_wait(seconds_or_text: str, gone: bool, timeout_seconds: float) -> None:
         _err(exc)
 
 
+@cli.command("wait-element", context_settings=CONTEXT_SETTINGS)
+@click.argument("role")
+@click.argument("name")
+@click.option("--state", default="visible", show_default=True,
+              help="visible|hidden|attached|enabled|disabled|checked|unchecked|editable")
+@click.option("--timeout", "timeout_seconds", default=30.0, show_default=True, type=float,
+              help="Max seconds to poll.")
+def cmd_wait_element(role: str, name: str, state: str, timeout_seconds: float) -> None:
+    """Wait until an element with ROLE and NAME reaches STATE.
+
+    Unlike verify-visible / verify-state, this never fails the command on a
+    miss - it prints "READY", "TIMEOUT: ..." or "AMBIGUOUS: ..." and always
+    exits 0, so a caller reads the text to decide what to do next instead of
+    catching a non-zero exit.
+
+    \b
+    Examples:
+        bridgic-browser wait-element button Login
+        bridgic-browser wait-element textbox Password --timeout 45
+        bridgic-browser wait-element button Submit --state enabled
+    """
+    try:
+        _ok(send_command(
+            "wait_element",
+            {"role": role, "name": name, "state": state, "timeout": timeout_seconds},
+            start_if_needed=False,
+        ))
+    except Exception as exc:
+        _err(exc)
+
+
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
 @cli.command("tabs", context_settings=CONTEXT_SETTINGS)

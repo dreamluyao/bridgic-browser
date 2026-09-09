@@ -72,6 +72,7 @@ This model is the foundation of all correspondence in this guide.
 | `mouse-down` | `mouse_down` |
 | `mouse-up` | `mouse_up` |
 | `wait` | `wait_for` |
+| `wait-element` | `wait_for_element` |
 | `screenshot` | `take_screenshot` |
 | `pdf` | `save_pdf` |
 | `network-start` | `start_network_capture` |
@@ -118,6 +119,11 @@ This model is the foundation of all correspondence in this guide.
   - `wait "Done"` -> `wait_for(text="Done")`
   - `wait --gone "Loading"` -> `wait_for(text_gone="Loading")` — `--gone` only works with a text argument
   - SDK-only (no CLI equivalent): `wait_for(selector=".spinner", state="hidden", timeout=10.0)`
+- `wait-element ROLE NAME [--state STATE] [--timeout S]` -> `wait_for_element(role, accessible_name, state="visible", timeout=30.0)`:
+  - Identifies one element by role + accessible name (the same vocabulary a snapshot reports), not a CSS selector.
+  - Unlike `wait`/`wait_for` and every `verify-*`/`verify_*` command, this **never fails/raises on a miss** — it returns `"READY"`, `"TIMEOUT: ..."`, or `"AMBIGUOUS: ..."` as its result text (CLI exit code stays 0 either way), so generated code should branch on the returned string instead of catching an exception.
+  - `--state` / `state` accepts `visible` (default), `hidden`, `attached`, `enabled`, `disabled`, `checked`, `unchecked`, `editable` — same vocabulary as `verify-state` / `verify_element_state`.
+  - Not a substitute for resolving one of several elements that share a role and name (e.g. a repeated per-row control) — it reports `"AMBIGUOUS"` rather than guessing; disambiguate those via a snapshot ref instead.
 - `fill REF TEXT [--submit] [--secret]` -> `input_text_by_ref(ref, text, submit=False, is_secret=False)`
   - `--secret` -> `is_secret=True`
   - SDK-only params: `clear=True` (clear field before typing), `slowly=False` (type char-by-char with key events)

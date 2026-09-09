@@ -2112,6 +2112,94 @@ class TestGetElementByRefAriaRef:
         nth_mock.locator.assert_called_once_with("aria-ref=f1e99")
 
 
+class TestGetElementByRefRetry:
+    """Tests for the ``timeout`` retry wrapper around ref resolution.
+
+    Resolution itself (aria-ref fast path, CSS rebuild, ambiguity recovery)
+    is exercised by TestBrowserRefResolution / TestGetElementByRefAriaRef —
+    these tests only cover the polling behavior added on top of it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_default_timeout_does_not_retry(self):
+        """timeout=0 (the default) preserves the original single-shot behavior."""
+        browser = Browser(stealth=False)
+        browser._page = MagicMock()
+        browser._last_snapshot = SimpleNamespace(refs={})
+        browser._snapshot_generator = MagicMock()
+        browser._snapshot_generator.get_locator_from_ref_async.return_value = None
+        browser.get_snapshot = AsyncMock()
+
+        result = await browser.get_element_by_ref("missing")
+
+        assert result is None
+        browser.get_snapshot.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_retries_and_resnapshots_until_ref_resolves(self):
+        """A ref missing from the current snapshot resolves once a later
+        (polled) snapshot includes it — the case of a ref that hadn't
+        rendered yet when the first snapshot was taken."""
+        browser = Browser(stealth=False)
+        browser._page = MagicMock()
+        browser._last_snapshot = SimpleNamespace(refs={})
+        browser._snapshot_generator = MagicMock()
+        browser._snapshot_generator.get_locator_from_ref_async.return_value = None
+
+        found_locator = MagicMock()
+        found_locator.count = AsyncMock(return_value=1)
+
+        async def fake_get_snapshot(*_args, **_kwargs):
+            browser._last_snapshot = SimpleNamespace(
+                refs={"e1": SimpleNamespace(role="button", name="Go", nth=None, playwright_ref=None, frame_path=None)}
+            )
+            browser._snapshot_generator.get_locator_from_ref_async.return_value = found_locator
+
+        browser.get_snapshot = AsyncMock(side_effect=fake_get_snapshot)
+
+        result = await browser.get_element_by_ref("e1", timeout=1.0)
+
+        assert result is found_locator
+        browser.get_snapshot.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_timeout_elapses_returns_none(self):
+        """A ref that never appears returns None once the budget is spent,
+        never raising — callers decide how to handle a persistent miss."""
+        browser = Browser(stealth=False)
+        browser._page = MagicMock()
+        browser._last_snapshot = SimpleNamespace(refs={})
+        browser._snapshot_generator = MagicMock()
+        browser._snapshot_generator.get_locator_from_ref_async.return_value = None
+        browser.get_snapshot = AsyncMock()
+
+        result = await browser.get_element_by_ref("never", timeout=0.2)
+
+        assert result is None
+        assert browser.get_snapshot.await_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_success_on_first_attempt_skips_retry_loop(self):
+        """A ref that resolves immediately never touches get_snapshot,
+        regardless of the timeout budget passed in - zero cost on the
+        success path."""
+        browser = Browser(stealth=False)
+        browser._page = MagicMock()
+        browser._last_snapshot = SimpleNamespace(
+            refs={"e1": SimpleNamespace(role="button", name="Go", nth=None, playwright_ref=None, frame_path=None)}
+        )
+        browser._snapshot_generator = MagicMock()
+        found_locator = MagicMock()
+        found_locator.count = AsyncMock(return_value=1)
+        browser._snapshot_generator.get_locator_from_ref_async.return_value = found_locator
+        browser.get_snapshot = AsyncMock()
+
+        result = await browser.get_element_by_ref("e1", timeout=30.0)
+
+        assert result is found_locator
+        browser.get_snapshot.assert_not_called()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Browser._start() CDP mode
 # ─────────────────────────────────────────────────────────────────────────────

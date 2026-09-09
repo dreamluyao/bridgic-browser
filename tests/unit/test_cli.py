@@ -173,6 +173,7 @@ CLI_COMMAND_SAMPLE_ARGS: dict[str, list[str]] = {
     "mouse-up": ["mouse-up"],
     # Wait
     "wait": ["wait", "1"],
+    "wait-element": ["wait-element", "button", "Submit"],
     # Capture
     "screenshot": ["screenshot", "out.png"],
     "pdf": ["pdf", "out.pdf"],
@@ -362,7 +363,7 @@ class TestSectionedGroupHelp:
             # Mouse
             "scroll", "mouse-move", "mouse-click", "mouse-drag", "mouse-down", "mouse-up",
             # Wait
-            "wait",
+            "wait", "wait-element",
             # Tabs
             "tabs", "new-tab", "switch-tab", "close-tab",
             # Capture

@@ -13,7 +13,7 @@ This guide helps you choose the right tools for different browser automation sce
 | Evaluate | 2 | Execute JavaScript in page or on element |
 | Keyboard | 4 | Keyboard typing and key state |
 | Mouse | 6 | Coordinate-based pointer control |
-| Wait | 1 | Time/text/selector waits |
+| Wait | 2 | Time/text/selector waits; single-element readiness gate |
 | Capture | 2 | Screenshot and PDF |
 | Network | 4 | Request capture and network idle waits |
 | Dialog | 3 | Alert/confirm/prompt handling |
@@ -351,6 +351,31 @@ Wait for network activity to settle. **timeout** is in seconds.
 await browser.wait_for_network_idle(timeout=30.0)
 ```
 
+### `wait_for_element`
+
+Polls a single element — identified the same way `get_snapshot()` reports it, by ARIA role and accessible name — until it reaches a given state. Unlike `wait_for` and the `verify_*` tools, **it never raises on a miss**: it returns `"READY"`, `"AMBIGUOUS: ..."`, or one of two distinct timeout shapes — `"TIMEOUT: ... never appeared within Ns"` (no matching element was ever found — a slow or wrong page) vs. `"TIMEOUT: ... found but state=... never reached within Ns"` (the element rendered but never reached the target state — an unmet precondition, e.g. a submit button disabled until its form is valid) — so the caller can branch (fall back, log, retry a different way) instead of the whole action sequence failing.
+
+Use it to gate an action or a data read on the specific element that action or read actually depends on. A fixed-duration wait, or a generic "page settled" proxy (`document.readyState`, a spinner count, a nearby heading, a URL fragment), can all be true before the element that matters has actually rendered — and none of them tell you *which* element you were waiting for.
+
+```python
+# Wait up to 45s for a labeled control to become visible.
+result = await browser.wait_for_element("button", "Submit", timeout=45.0)
+if result == "READY":
+    await browser.click_element_by_ref(ref)
+else:
+    logger.warning(result)  # "TIMEOUT: ..." or "AMBIGUOUS: ..." — degrade, don't raise
+
+# Gate on a different state: a button that renders immediately but stays
+# disabled until a form becomes valid.
+result = await browser.wait_for_element("button", "Continue", state="enabled", timeout=20.0)
+```
+
+`state` accepts the same vocabulary as `verify_element_state`: `visible` (default), `hidden`, `attached`, `enabled`, `disabled`, `checked`, `unchecked`, `editable`.
+
+**Scope**: this identifies exactly one *uniquely-named* landmark — a heading, a labeled form field, a named button, a banner. It is deliberately not a way to pick out one of several elements that share a role and name (for example, an icon-only action repeated once per row of a table): role+name can't tell those apart, and rather than silently act on whichever one Playwright returns first, `wait_for_element` reports `"AMBIGUOUS: N elements match ..."` so the mismatch is visible instead of a silent wrong-element bug. For a repeated or unnamed element, gate on something unique to its container instead (a heading, a result-count message, an empty-state message disappearing), then resolve the specific element through a fresh `get_snapshot()` and act on its ref — ref resolution has its own index-based disambiguation for exactly that case.
+
+For more than one landmark that must all be ready (e.g. several form fields before filling any of them), call `wait_for_element` once per landmark.
+
 ## Verification Tools
 
 Verification tools return `PASS: ...` on success. On mismatch, SDK raises
@@ -420,7 +445,7 @@ builder = BrowserToolSetBuilder.for_categories(
 )
 tools = builder.build()["tool_specs"]
 
-# Full access (all 67 tools)
+# Full access (all 68 tools)
 builder = BrowserToolSetBuilder.for_categories(browser, ToolCategory.ALL)
 tools = builder.build()["tool_specs"]
 ```

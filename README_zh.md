@@ -8,7 +8,7 @@
 
 ### 特性
 
-- **完善的 CLI 工具** — 67 个工具分为 15 类；可与各类 AI 智能体集成
+- **完善的 CLI 工具** — 68 个工具分为 15 类；可与各类 AI 智能体集成
 - **基于 Python 的工具** — 用于智能体 / 工作流代码生成；更易与 [Bridgic](https://github.com/bitsky-tech/bridgic) 集成
 - **语义不变的快照** — 基于无障碍树与专门设计的 ref 生成算法，保证元素 ref 在页面重载后仍可对应同一元素
 - **Skills** — 用于引导探索与代码生成；兼容多数编程类智能体
@@ -168,7 +168,7 @@ if __name__ == "__main__":
 
 ### CLI 工具
 
-`bridgic-browser` 提供命令行界面，用于在终端控制浏览器（67 个工具、15 类）。持久化 daemon 进程持有浏览器实例；每次 CLI 调用通过 Unix 域套接字连接后立即退出。
+`bridgic-browser` 提供命令行界面，用于在终端控制浏览器（68 个工具、15 类）。持久化 daemon 进程持有浏览器实例；每次 CLI 调用通过 Unix 域套接字连接后立即退出。
 
 #### 配置
 
@@ -401,7 +401,7 @@ browser = Browser(cdp="ws://localhost:9222/devtools/browser/...")
 | 元素交互 | `click`, `double-click`, `hover`, `focus`, `fill`, `select`, `options`, `check`, `uncheck`, `scroll-to`, `drag`, `upload`, `fill-form` |
 | 键盘 | `press`, `type`, `key-down`, `key-up` |
 | 鼠标 | `scroll`, `mouse-move`, `mouse-click`, `mouse-drag`, `mouse-down`, `mouse-up` |
-| 等待 | `wait [SECONDS] [TEXT] [--gone]` |
+| 等待 | `wait [SECONDS] [TEXT] [--gone]`, `wait-element ROLE NAME [--state STATE]` |
 | 标签页 | `tabs`, `new-tab`, `switch-tab`, `close-tab` |
 | 执行 | `eval`, `eval-on` |
 | 捕获 | `screenshot`, `pdf` |
@@ -421,7 +421,7 @@ bridgic-browser scroll -h
 
 ### Python 工具
 
-Bridgic Browser 提供 67 个工具，分为 15 类。使用 `BrowserToolSetBuilder` 按类别/名称选择，以适配不同场景。
+Bridgic Browser 提供 68 个工具，分为 15 类。使用 `BrowserToolSetBuilder` 按类别/名称选择，以适配不同场景。
 
 #### 按类别选择
 
@@ -524,8 +524,9 @@ tools = [*builder1.build()["tool_specs"], *builder2.build()["tool_specs"]]
 - `mouse_drag(start_x, start_y, end_x, end_y)` - 拖动操作
 - `mouse_down()` / `mouse_up()` - 鼠标按钮控制
 
-**等待（1 个工具）：**
+**等待（2 个工具）：**
 - `wait_for(time_seconds, text, text_gone, selector, state, timeout)` - 等待条件
+- `wait_for_element(role, accessible_name, state="visible", timeout=30.0)` - 轮询单个元素（通过 role + accessible name 定位）直到达到指定状态；超时不会抛出异常，而是返回 `"READY"`、`"TIMEOUT: ..."` 或 `"AMBIGUOUS: ..."`
 
 **捕获（2 个工具）：**
 - `take_screenshot(filename=None, ref=None, full_page=False, type="png")` - 截图
@@ -601,6 +602,7 @@ tools = [*builder1.build()["tool_specs"], *builder2.build()["tool_specs"]]
 | `mouse-down` | `mouse_down` |
 | `mouse-up` | `mouse_up` |
 | `wait` | `wait_for` |
+| `wait-element` | `wait_for_element` |
 | `screenshot` | `take_screenshot` |
 | `pdf` | `save_pdf` |
 | `network-start` | `start_network_capture` |

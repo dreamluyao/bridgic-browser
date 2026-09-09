@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Bridgic Browser** is an LLM-driven browser automation library built on Playwright with built-in stealth mode. It provides 67 browser tools organized into categories, an accessibility tree-based snapshot system, a stable element reference system (refs like "1f79fe5e", "8d4b03a9", …) designed for reliable AI agent interactions, and a `bridgic-browser` CLI tool backed by a persistent daemon.
+**Bridgic Browser** is an LLM-driven browser automation library built on Playwright with built-in stealth mode. It provides 68 browser tools organized into categories, an accessibility tree-based snapshot system, a stable element reference system (refs like "1f79fe5e", "8d4b03a9", …) designed for reliable AI agent interactions, and a `bridgic-browser` CLI tool backed by a persistent daemon.
 
 ## Commands
 
@@ -57,7 +57,7 @@ bridgic/browser/
 ├── _redact.py        # Log redaction helpers
 ├── errors.py         # Public BridgicBrowserError hierarchy
 ├── session/          # Core browser session
-│   ├── _browser.py        # Browser class – main entry point (all 67 tool methods live here)
+│   ├── _browser.py        # Browser class – main entry point (all 68 tool methods live here)
 │   ├── _browser_model.py  # Data models
 │   ├── _snapshot.py       # SnapshotGenerator + EnhancedSnapshot + RefData
 │   ├── _stealth.py        # StealthConfig + StealthArgsBuilder (50+ Chrome args)
@@ -67,12 +67,12 @@ bridgic/browser/
 │   ├── _launch.py         # launch-mode helpers (retriable_launch, etc.)
 │   ├── _locator_utils.py  # _click_checkable_target and other locator helpers
 │   └── _errors.py         # session-internal error types
-├── tools/            # 67 automation tools (all implemented in _browser.py)
+├── tools/            # 68 automation tools (all implemented in _browser.py)
 │   ├── _browser_tool_set_builder.py  # BrowserToolSetBuilder (category/name selection)
 │   └── _browser_tool_spec.py         # BrowserToolSpec (wraps tool for agents)
 └── cli/              # CLI tool (bridgic-browser command)
     ├── __init__.py    # Exports main()
-    ├── _commands.py   # Click command definitions (67 commands, SectionedGroup)
+    ├── _commands.py   # Click command definitions (68 commands, SectionedGroup)
     ├── _client.py     # Socket client: send_command(), ensure_daemon_running()
     ├── _daemon.py     # Daemon: asyncio Unix socket server + Browser instance
     └── _transport.py  # Unix-socket transport layer (used by client and daemon)
@@ -221,6 +221,15 @@ Leak paths no flag can close, documented rather than fixed: shell history for a 
 - `full_page=False` — limit to viewport content only
 - `await browser.get_snapshot_text(...)` — returns a string ready for LLM context; when content exceeds `limit` (default 10000) or `file` is explicitly provided, full snapshot is saved to a file and only a notice with the file path is returned
 
+### Waiting and readiness
+
+Two distinct tools cover two distinct waiting problems — pick the one that matches what you're actually waiting for:
+
+- **`wait_for(time_seconds=…)` / `wait_for(text=…)` / `wait_for(text_gone=…)` / `wait_for(selector=…)`** — general-purpose waits: a fixed delay, or a condition expressed in text/CSS terms. Raises on timeout.
+- **`wait_for_element(role, accessible_name, state="visible", timeout=30.0)`** — polls a single element identified the same way `get_snapshot()` reports it (role + accessible name) until it reaches a state (`visible`, `hidden`, `attached`, `enabled`, `disabled`, `checked`, `unchecked`, `editable`). Unlike `wait_for` and the `verify_*` tools, it **never raises on a miss** — it returns `"READY"`, `"TIMEOUT: ..."`, or `"AMBIGUOUS: ..."` as a plain string, so a caller can branch instead of the whole action sequence failing. Use it to gate an action or a data read on the specific element that action/read actually depends on, rather than a fixed-duration wait or a generic "page settled" proxy (`document.readyState`, a spinner count, a nearby heading) — those can all be true before the element that matters has rendered.
+  - It identifies exactly one uniquely-named landmark. It is not a way to pick one of several elements that share a role and name (e.g. a repeated icon-only control in a list) — role+name can't disambiguate those, and rather than silently guess, it reports `"AMBIGUOUS"`. For a repeated element, gate on something unique to its container instead, then resolve the specific element via a fresh `get_snapshot()` and its ref.
+- **`get_element_by_ref(ref, timeout=...)`** also retries (see "Ref System Internals" below) — every `*_by_ref` tool already passes a small bounded timeout, so a ref that hadn't rendered yet at snapshot time gets a few automatic retries before the tool raises `REF_NOT_AVAILABLE`. This is a safety net for small timing gaps, not a substitute for `wait_for_element` when a target is known to load slowly.
+
 ### Stealth
 
 `StealthConfig` (default enabled) applies Chrome arguments and a JS init script to evade bot detection. The strategy is **mode-aware**: headless mode uses a full 50+ flag set; headed mode uses a minimal ~11 flag set to match real Chrome user behavior.
@@ -288,6 +297,7 @@ Key constraints:
 - `frame_path` (per-level local indices) is unrelated to Playwright's `frame.seq` (page-level global counter).
 - **Covered-element check** uses `window.parent !== window` (not `window.frameElement !== null`) to detect iframes — the latter returns `null` under `file://` protocol. Iframe elements skip the check entirely because `bounding_box()` returns main-viewport coordinates while `elementFromPoint()` uses iframe-local coordinates.
 - **Small icon rule**: icons 10–50 px are interactive only with `data-action` or `aria-label` (not `classAndId` — too many false positives).
+- **Bounded resolution retry**: `get_element_by_ref(ref, timeout=...)` defaults to `timeout=0.0` (original single-shot behavior — a miss returns `None` immediately). Every ref-based action/read tool passes a small non-zero timeout (`_timeouts.REF_RESOLVE_S`, default 5s) so a ref that hadn't rendered yet at snapshot time gets a bounded number of re-snapshot-and-retry attempts instead of failing the whole call on a timing race. This is a safety net for small gaps, not a substitute for gating on content known to load slowly — see `wait_for_element` below.
 
 For complete source-level documentation of Playwright internals, ref generation, lookup strategies, and iframe handling, see [`docs/INTERNALS.md`](docs/INTERNALS.md).
 

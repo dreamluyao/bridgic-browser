@@ -25,6 +25,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from bridgic.browser import _timeouts
 from bridgic.browser._cli_catalog import (
     CLI_ALL_COMMANDS,
     CLI_COMMAND_TO_TOOL_METHOD,
@@ -477,7 +478,7 @@ class TestElementInteractionTools:
 
         await Browser.click_element_by_ref(mock_browser, "e1")
 
-        mock_browser.get_element_by_ref.assert_called_once_with("e1")
+        mock_browser.get_element_by_ref.assert_called_once_with("e1", timeout=_timeouts.REF_RESOLVE_S)
         mock_locator.click.assert_called_once()
 
     @pytest.mark.asyncio
@@ -748,7 +749,7 @@ class TestElementInteractionTools:
         mock_target = MagicMock()
         mock_target.bounding_box = AsyncMock(return_value={"x": 300, "y": 300, "width": 50, "height": 50})
 
-        async def get_element(ref):
+        async def get_element(ref, **_kwargs):
             return mock_source if ref == "e1" else mock_target
 
         mock_browser.get_element_by_ref.side_effect = get_element
@@ -1162,7 +1163,7 @@ class TestKeyboardTools:
         mock_locator = MagicMock()
         mock_locator.fill = AsyncMock()
 
-        async def get_element(ref):
+        async def get_element(ref, **_kwargs):
             return mock_locator if ref == "e1" else None
 
         mock_browser.get_element_by_ref.side_effect = get_element
@@ -1700,6 +1701,100 @@ class TestVerifyTools:
         result = await Browser.verify_title(mock_browser, expected_title="Test")
 
         assert "PASS" in result
+
+
+class TestWaitForElement:
+    """Tests for wait_for_element — the non-raising readiness gate."""
+
+    @pytest.mark.asyncio
+    async def test_ready_when_element_reaches_state(self, mock_browser):
+        mock_page = mock_browser.get_current_page.return_value
+        mock_locator = MagicMock()
+        mock_locator.count = AsyncMock(return_value=1)
+        mock_locator.is_visible = AsyncMock(return_value=True)
+        mock_page.get_by_role.return_value = mock_locator
+
+        result = await Browser.wait_for_element(mock_browser, role="button", accessible_name="Login")
+
+        assert result == "READY"
+
+    @pytest.mark.asyncio
+    async def test_enabled_state(self, mock_browser):
+        mock_page = mock_browser.get_current_page.return_value
+        mock_locator = MagicMock()
+        mock_locator.count = AsyncMock(return_value=1)
+        mock_locator.is_enabled = AsyncMock(return_value=True)
+        mock_page.get_by_role.return_value = mock_locator
+
+        result = await Browser.wait_for_element(
+            mock_browser, role="button", accessible_name="Submit", state="enabled",
+        )
+
+        assert result == "READY"
+
+    @pytest.mark.asyncio
+    async def test_timeout_when_element_never_appears(self, mock_browser):
+        mock_page = mock_browser.get_current_page.return_value
+        mock_locator = MagicMock()
+        mock_locator.count = AsyncMock(return_value=0)
+        mock_page.get_by_role.return_value = mock_locator
+
+        result = await Browser.wait_for_element(
+            mock_browser, role="button", accessible_name="Never", timeout=0.05,
+        )
+
+        assert result.startswith("TIMEOUT:")
+        assert "never appeared" in result
+
+    @pytest.mark.asyncio
+    async def test_timeout_distinguishes_found_but_wrong_state(self, mock_browser):
+        """An element that renders but never reaches the target state (e.g. a
+        submit button disabled until its form is valid) is a different
+        problem than the element never appearing, and should say so."""
+        mock_page = mock_browser.get_current_page.return_value
+        mock_locator = MagicMock()
+        mock_locator.count = AsyncMock(return_value=1)
+        mock_locator.is_enabled = AsyncMock(return_value=False)
+        mock_page.get_by_role.return_value = mock_locator
+
+        result = await Browser.wait_for_element(
+            mock_browser, role="button", accessible_name="Continue", state="enabled", timeout=0.05,
+        )
+
+        assert result.startswith("TIMEOUT:")
+        assert "found but state" in result
+        assert "never appeared" not in result
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_when_multiple_elements_match(self, mock_browser):
+        """A role+name that matches several elements (e.g. an icon-only
+        action button repeated once per table row) must not be silently
+        resolved to whichever one Playwright returns first."""
+        mock_page = mock_browser.get_current_page.return_value
+        mock_locator = MagicMock()
+        mock_locator.count = AsyncMock(return_value=3)
+        mock_page.get_by_role.return_value = mock_locator
+
+        result = await Browser.wait_for_element(
+            mock_browser, role="button", accessible_name="", timeout=0.05,
+        )
+
+        assert result.startswith("AMBIGUOUS:")
+        assert "3 elements" in result
+
+    @pytest.mark.asyncio
+    async def test_invalid_state_raises(self, mock_browser):
+        with pytest.raises(InvalidInputError) as exc_info:
+            await Browser.wait_for_element(mock_browser, role="button", accessible_name="X", state="bogus")
+        assert exc_info.value.code == "INVALID_STATE_VALUE"
+
+    @pytest.mark.asyncio
+    async def test_no_active_page_raises(self, mock_browser):
+        mock_browser.get_current_page = AsyncMock(return_value=None)
+        with pytest.raises(StateError) as exc_info:
+            await Browser.wait_for_element(mock_browser, role="button", accessible_name="X")
+        assert exc_info.value.code == "NO_ACTIVE_PAGE"
+
 
 # ==================== DevTools Tests ====================
 

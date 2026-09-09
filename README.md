@@ -8,7 +8,7 @@
 
 ### Features
 
-- **Comprehensive CLI Tools** - 67 tools organized into 15 categories; Designed to integrate with any AI agent
+- **Comprehensive CLI Tools** - 68 tools organized into 15 categories; Designed to integrate with any AI agent
 - **Python-based Tools** - Used for agent / workflow code generation; Easier integration with [Bridgic](https://github.com/bitsky-tech/bridgic) 
 - **Snapshot with Semantic Invariance** - A representation of page snapshot based on accessibility tree and a specially designed ref-generation algorithm that ensures element refs remain unchanged across page reloads
 - **Skills** - Used for guided exploration and code generation; Compatible with most of coding agents
@@ -168,7 +168,7 @@ if __name__ == "__main__":
 
 ### CLI Tools
 
-`bridgic-browser` ships with a command-line interface for controlling a browser from the terminal (67 tools organized into 15 categories). A persistent daemon process holds a browser instance; each CLI invocation connects over a Unix domain socket and exits immediately.
+`bridgic-browser` ships with a command-line interface for controlling a browser from the terminal (68 tools organized into 15 categories). A persistent daemon process holds a browser instance; each CLI invocation connects over a Unix domain socket and exits immediately.
 
 #### Configuration
 
@@ -407,7 +407,7 @@ browser = Browser(cdp="ws://localhost:9222/devtools/browser/...")
 | Element Interaction | `click`, `double-click`, `hover`, `focus`, `fill`, `select`, `options`, `check`, `uncheck`, `scroll-to`, `drag`, `upload`, `fill-form` |
 | Keyboard | `press`, `type`, `key-down`, `key-up` |
 | Mouse | `scroll`, `mouse-move`, `mouse-click`, `mouse-drag`, `mouse-down`, `mouse-up` |
-| Wait | `wait [SECONDS] [TEXT] [--gone]` |
+| Wait | `wait [SECONDS] [TEXT] [--gone]`, `wait-element ROLE NAME [--state STATE]` |
 | Tabs | `tabs`, `new-tab`, `switch-tab`, `close-tab` |
 | Evaluate | `eval`, `eval-on` |
 | Capture | `screenshot`, `pdf` |
@@ -427,7 +427,7 @@ bridgic-browser scroll -h
 
 ### Python Tools
 
-Bridgic Browser provides 67 tools organized into 15 categories. Use `BrowserToolSetBuilder` with category/name selection for scenario-focused tool sets.
+Bridgic Browser provides 68 tools organized into 15 categories. Use `BrowserToolSetBuilder` with category/name selection for scenario-focused tool sets.
 
 #### Category-based Selection
 
@@ -530,8 +530,9 @@ tools = [*builder1.build()["tool_specs"], *builder2.build()["tool_specs"]]
 - `mouse_drag(start_x, start_y, end_x, end_y)` - Drag operation
 - `mouse_down()` / `mouse_up()` - Mouse button control
 
-**Wait (1 tool):**
+**Wait (2 tools):**
 - `wait_for(time_seconds, text, text_gone, selector, state, timeout)` - Wait for conditions
+- `wait_for_element(role, accessible_name, state="visible", timeout=30.0)` - Poll a single element (identified by role + accessible name) until it reaches a state; never raises on a miss — returns `"READY"`, `"TIMEOUT: ..."`, or `"AMBIGUOUS: ..."`
 
 **Capture (2 tools):**
 - `take_screenshot(filename=None, ref=None, full_page=False, type="png")` - Capture screenshot
@@ -607,6 +608,7 @@ tools = [*builder1.build()["tool_specs"], *builder2.build()["tool_specs"]]
 | `mouse-down` | `mouse_down` |
 | `mouse-up` | `mouse_up` |
 | `wait` | `wait_for` |
+| `wait-element` | `wait_for_element` |
 | `screenshot` | `take_screenshot` |
 | `pdf` | `save_pdf` |
 | `network-start` | `start_network_capture` |

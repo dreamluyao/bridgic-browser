@@ -3792,7 +3792,9 @@ class Browser:
         except Exception as e:
             logger.debug("[pre_warm] failed (best-effort): %s", e)
 
-    async def get_element_by_ref(self, ref: str, _fallback_depth: int = 0) -> Optional[Locator]:
+    async def get_element_by_ref(
+        self, ref: str, timeout: float = 0.0, _fallback_depth: int = 0,
+    ) -> Optional[Locator]:
         """Resolve a snapshot ref to a Playwright Locator.
 
         Parameters
@@ -3800,6 +3802,14 @@ class Browser:
         ref : str
             Element ref from the last snapshot (e.g., "1f79fe5e", "8d4b03a9").
             Obtain refs by calling :meth:`get_snapshot` or :meth:`get_snapshot_text` first.
+        timeout : float, optional
+            If the ref doesn't resolve on the first attempt, keep retrying
+            (re-snapshotting each attempt) for up to this many seconds instead
+            of returning ``None`` immediately. Default ``0.0`` — no retry,
+            original single-shot behavior. Use a non-zero value for a ref that
+            may not have rendered yet; this is a bounded safety net for small
+            timing gaps, not a substitute for :meth:`wait_for_element` when the
+            target is known to load slowly. Zero-cost on the success path.
         _fallback_depth : int, optional
             Internal recursion guard for the recovery path. Do not pass this parameter.
 
@@ -3809,7 +3819,8 @@ class Browser:
             Resolved Playwright ``Locator``, or ``None`` when:
             - No page is open (``start()`` not called or browser closed).
             - No snapshot has been taken yet.
-            - ``ref`` is not present in the last snapshot.
+            - ``ref`` is not present in the last snapshot, and it still isn't
+              after retrying for up to ``timeout`` seconds.
             Returns ``None`` instead of raising so callers can decide how to handle
             a stale or unknown ref.
 
@@ -3821,6 +3832,30 @@ class Browser:
         - For elements inside iframes, the locator is scoped through the correct
           ``frame_locator`` chain derived from ``RefData.frame_path``.
         """
+        locator = await self._get_element_by_ref_once(ref, _fallback_depth=_fallback_depth)
+        if locator is not None or timeout <= 0 or _fallback_depth > 0:
+            return locator
+
+        poll_interval = 0.25
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            await asyncio.sleep(min(poll_interval, remaining))
+            try:
+                # Re-snapshot so a ref that hadn't rendered yet gets a chance
+                # to appear — a plain retry against the stale `_last_snapshot`
+                # would never find it, since resolution only ever looks there.
+                await self.get_snapshot()
+            except Exception:
+                pass
+            locator = await self._get_element_by_ref_once(ref, _fallback_depth=_fallback_depth)
+            if locator is not None:
+                return locator
+
+    async def _get_element_by_ref_once(self, ref: str, _fallback_depth: int = 0) -> Optional[Locator]:
+        """Single-attempt resolution — see :meth:`get_element_by_ref` for the retrying wrapper."""
         if not self._page:
             logger.warning("No page is open, can't get element by ref")
             return None
@@ -4062,7 +4097,7 @@ class Browser:
             best_ref,
             best_data.name or best_data.text_content or best_data.role,
         )
-        return await self.get_element_by_ref(best_ref, _fallback_depth=1)
+        return await self._get_element_by_ref_once(best_ref, _fallback_depth=1)
 
     async def get_element_by_prompt(self, prompt: str, llm: "OpenAILlm") -> Optional[Locator]:
         """Find element by natural language prompt and return Locator.
@@ -5317,6 +5352,166 @@ Before you return the element ref, reason about the state and elements for a sen
             logger.error(f"[wait_for] {error_msg}")
             _raise_operation_error(error_msg)
 
+    async def wait_for_element(
+        self,
+        role: str,
+        accessible_name: str,
+        state: str = "visible",
+        timeout: float = 30.0,
+    ) -> str:
+        """Poll until an element with `role`/`accessible_name` reaches `state`.
+
+        Unlike :meth:`verify_element_visible` / :meth:`verify_element_state`,
+        this never raises when the state isn't reached in time - it returns a
+        plain string so the caller can branch (fall back, log, retry
+        differently) instead of the whole action sequence dying. Use it to
+        gate an action or a data read on the specific element it actually
+        depends on, instead of a fixed ``time_seconds`` wait or a generic
+        "page settled" proxy (``document.readyState``, a spinner count, a
+        nearby heading, a URL fragment) - all of those can be true before the
+        element that matters has rendered, or before the action that was
+        supposed to change the page has taken effect.
+
+        This tool identifies ONE uniquely-named landmark - a heading, a
+        labeled form field, a named button, an error banner - using the same
+        role/name vocabulary :meth:`get_snapshot` reports. It is deliberately
+        not a way to pick out one of several elements that share a role and
+        name (e.g. an icon-only action repeated per row of a table, or an
+        unnamed control repeated in a list): role+name cannot distinguish
+        those, and rather than silently act on whichever one Playwright
+        returns first, this returns "AMBIGUOUS" so the misuse is visible. For
+        a repeated/unnamed element, gate on a landmark that is unique to the
+        container instead (its heading, its result-count text, an "empty
+        state" message going away), then resolve the specific element via a
+        fresh :meth:`get_snapshot` and act on its ref - ref resolution has
+        its own position/index disambiguation for exactly that case.
+
+        For more than one landmark (e.g. several form fields that must all
+        be present before filling any of them), call this once per landmark;
+        chain the calls in the order that matters most for your flow.
+
+        Parameters
+        ----------
+        role : str
+            ARIA role of the element (e.g., "button", "textbox", "heading").
+        accessible_name : str
+            Accessible name of the element (its visible text or aria-label).
+        state : str, optional
+            One of "visible" | "hidden" | "attached" | "enabled" | "disabled"
+            | "checked" | "unchecked" | "editable" (same vocabulary as
+            :meth:`verify_element_state`). Default "visible".
+        timeout : float, optional
+            Max seconds to poll. Default 30.0.
+
+        Returns
+        -------
+        str
+            "READY" once exactly one matching element reaches `state`.
+            "TIMEOUT: role=... name=... never appeared within Ns" if no
+            matching element was ever found - a slow or wrong page.
+            "TIMEOUT: role=... name=... found but state=... never reached
+            within Ns" if the element did appear but never reached `state` -
+            an unmet precondition (e.g. a submit button that stays disabled
+            until its form is valid), a different problem than "not there".
+            "AMBIGUOUS: N elements match role=... name=..." if more than one
+            element matched for the whole timeout window - role+name isn't
+            unique enough here; pick a different landmark.
+
+        Raises
+        ------
+        StateError
+            No active page available - a setup problem, not a readiness
+            question.
+        InvalidInputError
+            Unknown `state` value.
+        """
+        valid_states = ("visible", "hidden", "attached", "enabled", "disabled", "checked", "unchecked", "editable")
+        if state not in valid_states:
+            _raise_invalid_input(
+                f"Unknown state '{state}'",
+                code="INVALID_STATE_VALUE",
+                details={"state": state, "valid_states": list(valid_states)},
+            )
+
+        page = await self.get_current_page()
+        if page is None:
+            _raise_state_error("No active page available", code="NO_ACTIVE_PAGE")
+
+        logger.info(
+            f"[wait_for_element] start role={role} name={accessible_name} state={state} timeout={timeout}"
+        )
+
+        try:
+            poll_interval = 0.25
+            deadline = time.monotonic() + timeout
+            last_count = 0
+            ever_found = False  # count == 1 at least once - distinguishes
+                                 # "never appeared" from "appeared but never
+                                 # reached `state`", which point at different
+                                 # causes: a slow/wrong page vs. an unmet
+                                 # precondition on an already-rendered element.
+            while True:
+                locator = page.get_by_role(role, name=accessible_name)
+                try:
+                    last_count = await locator.count()
+                except Exception:
+                    last_count = 0
+
+                if last_count == 1:
+                    ever_found = True
+                    reached = False
+                    try:
+                        if state == "visible":
+                            reached = await locator.is_visible()
+                        elif state == "hidden":
+                            reached = await locator.is_hidden()
+                        elif state == "attached":
+                            reached = True  # count == 1 already proves attachment
+                        elif state == "enabled":
+                            reached = await locator.is_enabled()
+                        elif state == "disabled":
+                            reached = await locator.is_disabled()
+                        elif state == "checked":
+                            reached = await locator.is_checked()
+                        elif state == "unchecked":
+                            reached = not await locator.is_checked()
+                        elif state == "editable":
+                            reached = await locator.is_editable()
+                    except Exception:
+                        reached = False
+                    if reached:
+                        result = "READY"
+                        logger.info(f"[wait_for_element] {result}")
+                        return result
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(poll_interval, remaining))
+
+            if last_count > 1:
+                result = (
+                    f"AMBIGUOUS: {last_count} elements match role={role!r} name={accessible_name!r} "
+                    "- cannot tell which one to wait on"
+                )
+            elif ever_found:
+                result = (
+                    f"TIMEOUT: role={role!r} name={accessible_name!r} found but state={state!r} "
+                    f"never reached within {timeout}s"
+                )
+            else:
+                result = (
+                    f"TIMEOUT: role={role!r} name={accessible_name!r} never appeared within {timeout}s"
+                )
+            logger.warning(f"[wait_for_element] {result}")
+            return result
+        except BridgicBrowserError:
+            raise
+        except Exception as e:
+            error_msg = f"Wait for element failed: {str(e)}"
+            logger.error(f"[wait_for_element] {error_msg}")
+            _raise_operation_error(error_msg)
+
     # ==================== Element Action Tools (by ref) ====================
 
     async def input_text_by_ref(
@@ -5404,7 +5599,7 @@ Before you return the element ref, reason about the state and elements for a sen
             # so invalidate it now rather than returning a stale snapshot.
             self._cancel_prefetch()
 
-            locator = await self.get_element_by_ref(ref)
+            locator = await self.get_element_by_ref(ref, timeout=_timeouts.REF_RESOLVE_S)
             if locator is None:
                 msg = f'Element ref {ref} is not available - page may have changed. Please try refreshing browser state.'
                 logger.warning(f'[input_text_by_ref] {msg}')
@@ -5576,7 +5771,7 @@ Before you return the element ref, reason about the state and elements for a sen
             # page, so drop it before dispatching the action.
             self._cancel_prefetch()
 
-            locator = await self.get_element_by_ref(ref)
+            locator = await self.get_element_by_ref(ref, timeout=_timeouts.REF_RESOLVE_S)
             if locator is None:
                 msg = f'Element ref {ref} is not available - page may have changed. Please try refreshing browser state.'
                 logger.warning(f'[click_element_by_ref] {msg}')
@@ -5644,7 +5839,7 @@ Before you return the element ref, reason about the state and elements for a sen
             Numbered list: "1. Option Text (value: val)"
         """
         try:
-            locator = await self.get_element_by_ref(ref)
+            locator = await self.get_element_by_ref(ref, timeout=_timeouts.REF_RESOLVE_S)
             if locator is None:
                 msg = f'Element ref {ref} is not available - page may have changed. Please try refreshing browser state.'
                 logger.warning(f'[get_dropdown_options_by_ref] {msg}')
@@ -5742,7 +5937,7 @@ Before you return the element ref, reason about the state and elements for a sen
             # so any prefetched snapshot from before the selection is stale.
             self._cancel_prefetch()
 
-            locator = await self.get_element_by_ref(ref)
+            locator = await self.get_element_by_ref(ref, timeout=_timeouts.REF_RESOLVE_S)
             if locator is None:
                 msg = f'Element ref {ref} is not available - page may have changed. Please try refreshing browser state.'
                 logger.warning(f'[select_dropdown_option_by_ref] {msg}')
@@ -5847,7 +6042,7 @@ Before you return the element ref, reason about the state and elements for a sen
             Result message.
         """
         try:
-            locator = await self.get_element_by_ref(ref)
+            locator = await self.get_element_by_ref(ref, timeout=_timeouts.REF_RESOLVE_S)
             if locator is None:
                 msg = f'Element ref {ref} is not available - page may have changed. Please try refreshing browser state.'
                 logger.warning(f'[hover_element_by_ref] {msg}')
@@ -5923,7 +6118,7 @@ Before you return the element ref, reason about the state and elements for a sen
             Result message.
         """
         try:
-            locator = await self.get_element_by_ref(ref)
+            locator = await self.get_element_by_ref(ref, timeout=_timeouts.REF_RESOLVE_S)
             if locator is None:
                 msg = f'Element ref {ref} is not available - page may have changed. Please try refreshing browser state.'
                 logger.warning(f'[focus_element_by_ref] {msg}')
@@ -5968,7 +6163,7 @@ Before you return the element ref, reason about the state and elements for a sen
             Execution result as string.
         """
         try:
-            locator = await self.get_element_by_ref(ref)
+            locator = await self.get_element_by_ref(ref, timeout=_timeouts.REF_RESOLVE_S)
             if locator is None:
                 msg = f'Element ref {ref} is not available - page may have changed. Please try refreshing browser state.'
                 logger.warning(f'[evaluate_javascript_on_ref] {msg}')
@@ -6045,7 +6240,7 @@ Before you return the element ref, reason about the state and elements for a sen
                 logger.error(f'[upload_file_by_ref] {msg}')
                 _raise_operation_error(msg, code="NOT_FOUND", details={"path": file_path})
 
-            locator = await self.get_element_by_ref(ref)
+            locator = await self.get_element_by_ref(ref, timeout=_timeouts.REF_RESOLVE_S)
             if locator is None:
                 msg = f'Element ref {ref} is not available - page may have changed. Please try refreshing browser state.'
                 logger.warning(f'[upload_file_by_ref] {msg}')
@@ -6123,13 +6318,13 @@ Before you return the element ref, reason about the state and elements for a sen
         try:
             logger.info(f'[drag_element_by_ref] start start_ref={start_ref} end_ref={end_ref}')
 
-            source_locator = await self.get_element_by_ref(start_ref)
+            source_locator = await self.get_element_by_ref(start_ref, timeout=_timeouts.REF_RESOLVE_S)
             if source_locator is None:
                 msg = f'Source element ref {start_ref} is not available - page may have changed.'
                 logger.warning(f'[drag_element_by_ref] {msg}')
                 _raise_state_error(msg, code="REF_NOT_AVAILABLE", details={"start_ref": start_ref})
 
-            target_locator = await self.get_element_by_ref(end_ref)
+            target_locator = await self.get_element_by_ref(end_ref, timeout=_timeouts.REF_RESOLVE_S)
             if target_locator is None:
                 msg = f'Target element ref {end_ref} is not available - page may have changed.'
                 logger.warning(f'[drag_element_by_ref] {msg}')
@@ -6190,7 +6385,7 @@ Before you return the element ref, reason about the state and elements for a sen
             # prefetched snapshot before the interaction.
             self._cancel_prefetch()
 
-            locator = await self.get_element_by_ref(ref)
+            locator = await self.get_element_by_ref(ref, timeout=_timeouts.REF_RESOLVE_S)
             if locator is None:
                 msg = f'Element ref {ref} is not available - page may have changed. Please try refreshing browser state.'
                 logger.warning(f'[check_checkbox_or_radio_by_ref] {msg}')
@@ -6290,7 +6485,7 @@ Before you return the element ref, reason about the state and elements for a sen
 
             self._cancel_prefetch()
 
-            locator = await self.get_element_by_ref(ref)
+            locator = await self.get_element_by_ref(ref, timeout=_timeouts.REF_RESOLVE_S)
             if locator is None:
                 msg = f'Element ref {ref} is not available - page may have changed. Please try refreshing browser state.'
                 logger.warning(f'[uncheck_checkbox_by_ref] {msg}')
@@ -6393,7 +6588,7 @@ Before you return the element ref, reason about the state and elements for a sen
             # any prefetched snapshot from before the action is stale.
             self._cancel_prefetch()
 
-            locator = await self.get_element_by_ref(ref)
+            locator = await self.get_element_by_ref(ref, timeout=_timeouts.REF_RESOLVE_S)
             if locator is None:
                 msg = f'Element ref {ref} is not available - page may have changed. Please try refreshing browser state.'
                 logger.warning(f'[double_click_element_by_ref] {msg}')
@@ -6505,7 +6700,7 @@ Before you return the element ref, reason about the state and elements for a sen
         try:
             logger.info(f'[scroll_element_into_view_by_ref] start ref={ref}')
 
-            locator = await self.get_element_by_ref(ref)
+            locator = await self.get_element_by_ref(ref, timeout=_timeouts.REF_RESOLVE_S)
             if locator is None:
                 msg = f'Element ref {ref} is not available - page may have changed. Please try refreshing browser state.'
                 logger.warning(f'[scroll_element_into_view_by_ref] {msg}')
@@ -7031,7 +7226,7 @@ Before you return the element ref, reason about the state and elements for a sen
                     errors.append("Field missing 'ref' key")
                     continue
 
-                locator = await self.get_element_by_ref(ref)
+                locator = await self.get_element_by_ref(ref, timeout=_timeouts.REF_RESOLVE_S)
                 if locator is None:
                     errors.append(f"{ref}: not available")
                     continue
@@ -7134,7 +7329,7 @@ Before you return the element ref, reason about the state and elements for a sen
                 screenshot_options["quality"] = quality
 
             if ref is not None:
-                locator = await self.get_element_by_ref(ref)
+                locator = await self.get_element_by_ref(ref, timeout=_timeouts.REF_RESOLVE_S)
                 if locator is None:
                     msg = f'Element ref {ref} is not available - page may have changed.'
                     logger.warning(f'[take_screenshot] {msg}')

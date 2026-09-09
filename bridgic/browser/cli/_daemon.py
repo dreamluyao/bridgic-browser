@@ -343,6 +343,15 @@ async def _handle_wait(browser: "Browser", args: Dict[str, Any]) -> str:
     return await browser.wait_for(**kwargs)
 
 
+async def _handle_wait_element(browser: "Browser", args: Dict[str, Any]) -> str:
+    return await browser.wait_for_element(
+        role=args.get("role", ""),
+        accessible_name=args.get("name", ""),
+        state=args.get("state", "visible"),
+        timeout=float(args.get("timeout", 30.0)),
+    )
+
+
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
 async def _handle_tabs(browser: "Browser", _args: Dict[str, Any]) -> str:
@@ -594,6 +603,7 @@ _HANDLERS = {
     "mouse_up": _handle_mouse_up,
     # Wait
     "wait": _handle_wait,
+    "wait_element": _handle_wait_element,
     # Tabs
     "tabs": _handle_tabs,
     "new_tab": _handle_new_tab,
