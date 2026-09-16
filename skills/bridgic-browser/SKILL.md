@@ -22,6 +22,8 @@ bash "skills/bridgic-browser/scripts/install-deps.sh" "$PWD"
 
 The script checks uv availability, initializes a uv project if needed, installs missing packages, and ensures Playwright chromium is available.
 
+`bridgic-browser` is served by the private pypiserver at `http://us-papy-oc:4000/simple/`, not by public PyPI; the script writes that index into `pyproject.toml` before installing. Set `BRIDGIC_DEV_INDEX` to point at a different server. An install that fails to fetch is almost always the index being unreachable, not a missing package. The script pins no version, so it takes whatever the index serves as newest - which means the installed wheel can be ahead of this document, and the wheel is the authority.
+
 ## Strategies & Guidelines (Important!!)
 
 Notes:

@@ -88,6 +88,16 @@ Rule of thumb: if you're building an agent or want your script to behave like th
 - Resolve refs with ref-based methods (for example `click_element_by_ref("8d4b03a9")`).
 - `navigate_to(...)`, `search(...)`, `new_tab(...)` or `switch_tab(...)` may clear cached snapshot refs. Take a new snapshot after page changes.
 - `get_element_by_ref(...)` depends on the last snapshot cache.
+- **`click_element_by_ref` does not guarantee the click registers on a ref that is scrolled
+  outside its container's visible viewport.** The ref still resolves and the call still reports
+  success - no error, no timeout - but a site can silently drop a click on an element it has not
+  actually scrolled into view (observed on a long open listbox/combobox where only the first
+  handful of options render inside the visible scroll area). Symptom: the click "succeeds" but
+  the state it should have changed (a selection, a checked box, a toggled value) never changes,
+  no matter how many times the click is retried. Call `scroll_element_into_view_by_ref(ref)` (and
+  a short `wait_for`) before clicking any ref that came from a scrollable list of more than a
+  handful of items - a long dropdown, an autocomplete list, a virtualized menu - rather than
+  assuming a resolved ref is necessarily an interactable one.
 
 ## Tool Set Builder (for Agent Integration)
 
