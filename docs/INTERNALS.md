@@ -300,6 +300,8 @@ for local_nth in frame_path:
 
 `_iframe_local_counters: Dict[tuple, int]` (`_snapshot.py:1229`) tracks the iframe count under each parent path, ensuring per-level nth values are independent across multiple nesting levels.
 
+**Caveat — legacy `<frameset>`/`<frame>` pages are not covered**: `get_snapshot()` returns empty for a classic frameset document (a document with `<frameset>`/`<frame>` instead of `<body>`) because the single `page_snapshot_for_ai(page)` call on the main frame has no accessibility node to recurse from; each `<frame>`'s own content is fully readable via raw Playwright (`page.frame(name=...)`), just not through bridgic's snapshot/ref system. See [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md#legacy-frameset-pages-return-an-empty-snapshot).
+
 ---
 
 ## Interactive Element Detection — Small Icon Rule
