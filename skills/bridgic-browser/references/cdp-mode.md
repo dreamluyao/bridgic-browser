@@ -250,6 +250,8 @@ The CDP WebSocket can drop because of remote browser close/crash, network interr
 
 If the remote browser is gone (port no longer accepting), the reconnect fails and the error surfaces to the client as `BROWSER_CLOSED`.
 
+**Known limitation - a connect that hangs until timeout.** If a page in that Chrome opened a popup that ran `window.close()` immediately on load, Playwright 1.62+ can leave it as a stuck blank tab, and every later connect to that Chrome hangs until it times out (upstream [microsoft/playwright#42882](https://github.com/microsoft/playwright/issues/42882)). Close the blank tab or restart that Chrome, then reconnect. Launch modes are not affected.
+
 **Tip — pick a CDP input form that supports reconnect across Chrome restart:**
 
 | Form | Reconnects across Chrome restart? |

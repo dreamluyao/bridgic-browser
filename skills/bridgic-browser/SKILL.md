@@ -12,7 +12,7 @@ A bridgic-browser project requires the following packages:
 |---------|-------------|
 | `bridgic-browser` | Browser automation CLI + Python SDK (installing one installs both) |
 
-Additionally, browser binaries must be installed once: `uv run playwright install chromium`.
+Additionally, browser binaries must be installed once: `uv run playwright install chromium` - and again after any `bridgic-browser` upgrade that moves its Playwright pin (0.1.0 moved it to 1.64.x), or the first launch fails with "Executable doesn't exist".
 
 **Installation**: Run the install script to set up all dependencies:
 
@@ -40,6 +40,7 @@ Notes:
 - **window.print() is intercepted**: `window.print()` never shows a dialog. It silently saves a `print-<timestamp>.pdf` to `downloads_path` and appends it to `browser.downloaded_files`. In headless mode this is the only way to get print output — the native call is a no-op without the intercept.
 - **Credentials**: when filling a password, token, or OTP, pass `--secret` (CLI: `fill`, `type`, `fill-form`) or `is_secret=True` (SDK), or `"is_secret": true` on an individual `fill-form` field. It keeps the value out of the command response and bridgic's logs. It does **not** scrub an agent framework's own record of the tool arguments, your shell history, or a snapshot in which the page echoes the value back - see [cli-sdk-api-mapping.md](references/cli-sdk-api-mapping.md#secret-values-is_secret).
 - **CDP mode tab visibility**: when attached via `--cdp` to a user's running Chrome, `tabs` / `switch-tab` / `close-tab` only see pages bridgic itself opened (the initial blank tab plus anything spawned from it via `new-tab` or a click on a `target="_blank"` link). The user's other tabs are deliberately invisible to bridgic — never assume you can `switch-tab` into them. To work with such a tab, ask the user to navigate to it through bridgic, or use `new-tab <url>`.
+- **Snapshot text is not a stable format across bridgic-browser minors** (it follows Playwright's AI snapshot). Since 0.1.0 a container's name is dropped when it only repeats visible child content: table rows are unnamed (`- row [ref=...]:`), and a cell holding a link or input is unnamed while the link keeps its name; a child that only repeats its parent's name is gone (`button "Save"` has no `generic: Save` under it). When parsing snapshot text, read data from the leaf cells and links, match container lines with an optional name (`- row(?: "...")? [ref=`), and never key on a row's or a control-holding cell's name. Refs on controls (buttons, links, textboxes, checkboxes) were unchanged by that release; refs on rows are positional among unnamed rows, so treat them as VOLATILE.
 - **Legacy `<frameset>`/`<frame>` pages snapshot as empty**: modern `<iframe>` content is fully supported, but a classic frameset portal (no `<body>`, only `<frameset>`/`<frame>`) returns an empty snapshot with zero refs — fall back to raw Playwright (`page.frame(name=...)`) for those pages instead of assuming ref-based tools will find anything.
 
 ## Reference Files

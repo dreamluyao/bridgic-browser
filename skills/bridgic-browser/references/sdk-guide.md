@@ -88,6 +88,7 @@ Rule of thumb: if you're building an agent or want your script to behave like th
 - Resolve refs with ref-based methods (for example `click_element_by_ref("8d4b03a9")`).
 - `navigate_to(...)`, `search(...)`, `new_tab(...)` or `switch_tab(...)` may clear cached snapshot refs. Take a new snapshot after page changes.
 - `get_element_by_ref(...)` depends on the last snapshot cache.
+- **Parse snapshot text by leaf elements, not container names.** Since 0.1.0 (Playwright 1.64.x) a container's name is dropped when it only repeats visible child content: rows are `- row [ref=...]:` with no name, and a cell holding a link or input is unnamed (the link keeps its name). Match container lines with an optional name and read values from the cells and links underneath. Refs on rows are positional among unnamed rows - VOLATILE. `wait_for_element` is unaffected: it resolves names with Playwright's `get_by_role`, which still computes a row's name from its content.
 - **`click_element_by_ref` does not guarantee the click registers on a ref that is scrolled
   outside its container's visible viewport.** The ref still resolves and the call still reports
   success - no error, no timeout - but a site can silently drop a click on an element it has not
