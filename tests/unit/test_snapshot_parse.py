@@ -3668,147 +3668,35 @@ class TestPlaywrightRefStorage:
 
 
 # ---------------------------------------------------------------------------
-# _fallback_accessibility_snapshot — private-API absent degradation path
+# page_snapshot_for_ai — public aria_snapshot(mode="ai") call
 # ---------------------------------------------------------------------------
-# When Playwright's internal ``snapshotForAI`` is unavailable (pinned version
-# drift, upstream rename), ``page_snapshot_for_ai`` falls back to
-# ``page.accessibility.snapshot()`` and YAML-renders the tree. The output
-# carries no ``[ref=<playwright_ref>]`` suffix, which means the aria-ref fast
-# path is disabled for the rest of the session — this is a documented
-# degradation, not a bug, but the rendering itself must still be correct.
+# Playwright 1.61+ removed the private ``snapshotForAI`` protocol command and
+# exposes the same output via the public ``page.aria_snapshot(mode="ai")``.
 
-class TestFallbackAccessibilitySnapshot:
-    """Tests for ``SnapshotGenerator._fallback_accessibility_snapshot``."""
+class TestPageSnapshotForAI:
+    """Tests for ``SnapshotGenerator.page_snapshot_for_ai``."""
 
     @pytest.mark.asyncio
-    async def test_empty_tree_returns_empty_string(self, gen: SnapshotGenerator) -> None:
-        page = MagicMock()
-        page.accessibility = MagicMock()
-        page.accessibility.snapshot = AsyncMock(return_value=None)
-
-        result = await gen._fallback_accessibility_snapshot(page)
-
-        assert result == ""
-
-    @pytest.mark.asyncio
-    async def test_snapshot_exception_returns_empty_string(
-        self, gen: SnapshotGenerator
-    ) -> None:
-        """accessibility.snapshot() raising is a graceful-degradation path too."""
-        page = MagicMock()
-        page.accessibility = MagicMock()
-        page.accessibility.snapshot = AsyncMock(side_effect=RuntimeError("boom"))
-
-        result = await gen._fallback_accessibility_snapshot(page)
-
-        assert result == ""
-
-    @pytest.mark.asyncio
-    async def test_simple_tree_renders_role_and_name(
+    async def test_calls_public_aria_snapshot_in_ai_mode(
         self, gen: SnapshotGenerator
     ) -> None:
         page = MagicMock()
-        page.accessibility = MagicMock()
-        page.accessibility.snapshot = AsyncMock(return_value={
-            "role": "WebArea",
-            "name": "Home",
-            "children": [
-                {"role": "button", "name": "Submit", "children": []},
-                {"role": "link", "name": "About", "children": []},
-            ],
-        })
+        page.aria_snapshot = AsyncMock(return_value='- button "Go" [ref=e2]')
 
-        result = await gen._fallback_accessibility_snapshot(page)
+        result = await gen.page_snapshot_for_ai(page)
 
-        # Match the snapshotForAI YAML shape: ``- role "name"`` lines.
-        assert '- WebArea "Home"' in result
-        assert '- button "Submit"' in result
-        assert '- link "About"' in result
-        # Children are indented under the root.
-        lines = result.split("\n")
-        assert lines[0] == '- WebArea "Home"'
-        assert lines[1].startswith("  - ")
+        assert result == '- button "Go" [ref=e2]'
+        page.aria_snapshot.assert_awaited_once()
+        assert page.aria_snapshot.await_args.kwargs["mode"] == "ai"
 
     @pytest.mark.asyncio
-    async def test_nameless_node_renders_role_only(
+    async def test_none_result_becomes_empty_string(
         self, gen: SnapshotGenerator
     ) -> None:
-        """When ``name`` is missing/empty, emit ``- role`` without quotes."""
         page = MagicMock()
-        page.accessibility = MagicMock()
-        page.accessibility.snapshot = AsyncMock(return_value={
-            "role": "generic",
-            "children": [
-                {"role": "paragraph", "children": []},
-            ],
-        })
+        page.aria_snapshot = AsyncMock(return_value=None)
 
-        result = await gen._fallback_accessibility_snapshot(page)
-
-        assert "- generic" in result
-        assert "- paragraph" in result
-        # No accidental empty quotes.
-        assert 'generic ""' not in result
-
-    @pytest.mark.asyncio
-    async def test_missing_role_defaults_to_generic(
-        self, gen: SnapshotGenerator
-    ) -> None:
-        """Nodes without a ``role`` key should not crash — default to ``generic``."""
-        page = MagicMock()
-        page.accessibility = MagicMock()
-        page.accessibility.snapshot = AsyncMock(return_value={
-            "name": "orphan", "children": [],
-        })
-
-        result = await gen._fallback_accessibility_snapshot(page)
-
-        assert '- generic "orphan"' in result
-
-    @pytest.mark.asyncio
-    async def test_deeply_nested_indentation_scales(
-        self, gen: SnapshotGenerator
-    ) -> None:
-        """Each level adds two spaces of indent — matches snapshotForAI output."""
-        page = MagicMock()
-        page.accessibility = MagicMock()
-        # 4-deep tree
-        tree: Dict[str, Any] = {"role": "A", "children": [
-            {"role": "B", "children": [
-                {"role": "C", "children": [
-                    {"role": "D", "children": []},
-                ]},
-            ]},
-        ]}
-        page.accessibility.snapshot = AsyncMock(return_value=tree)
-
-        result = await gen._fallback_accessibility_snapshot(page)
-        lines = result.split("\n")
-
-        assert lines[0].lstrip() == "- A"
-        assert lines[0].startswith("- ")              # depth 0
-        assert lines[1].startswith("  - ")            # depth 1
-        assert lines[2].startswith("    - ")          # depth 2
-        assert lines[3].startswith("      - ")        # depth 3
-
-    @pytest.mark.asyncio
-    async def test_no_playwright_ref_suffix_emitted(
-        self, gen: SnapshotGenerator
-    ) -> None:
-        """The fallback MUST NOT emit ``[ref=...]`` — that signal only comes
-        from Playwright's private snapshotForAI API. The docstring loudly
-        documents that this degrades get_element_by_ref to the CSS-rebuild
-        path; this test pins the absence of ``[ref=`` to catch future regressions.
-        """
-        page = MagicMock()
-        page.accessibility = MagicMock()
-        page.accessibility.snapshot = AsyncMock(return_value={
-            "role": "button", "name": "Go", "children": [],
-        })
-
-        result = await gen._fallback_accessibility_snapshot(page)
-
-        assert "[ref=" not in result
+        assert await gen.page_snapshot_for_ai(page) == ""
 
 
 # ---------------------------------------------------------------------------

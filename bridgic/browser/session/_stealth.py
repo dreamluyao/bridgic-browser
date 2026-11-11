@@ -10,12 +10,15 @@ appear more like regular user browsers, helping bypass bot detection.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform as _platform
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # ========== UA cleanup helpers (R1) ==========
@@ -25,9 +28,9 @@ from typing import Any, Dict, List, Optional
 # UA-CH brand list via CDP `Network.setUserAgentOverride` (see _browser.py).
 
 _FALLBACK_REAL_CHROME_UA: Dict[str, str] = {
-    "darwin": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
-    "linux":  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
-    "win32":  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "darwin": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+    "linux":  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+    "win32":  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
 }
 
 
@@ -45,7 +48,7 @@ def build_ua_metadata(chrome_version: str) -> Dict[str, Any]:
     """userAgentMetadata for CDP Network.setUserAgentOverride.
     Keeps Sec-CH-UA brands consistent with our cleaned navigator.userAgent.
     """
-    major = (chrome_version.split(".")[0] if chrome_version else "143")
+    major = (chrome_version.split(".")[0] if chrome_version else "156")
     plat_name = {"darwin": "macOS", "linux": "Linux", "win32": "Windows"}.get(sys.platform, "Linux")
     plat_ver = "10.15.7" if sys.platform == "darwin" else ("10.0" if sys.platform == "win32" else "6.0")
     arch = "arm" if "arm" in (_platform.machine() or "").lower() else "x86"
@@ -55,7 +58,7 @@ def build_ua_metadata(chrome_version: str) -> Dict[str, Any]:
             {"brand": "Not_A Brand",   "version": "8"},
             {"brand": "Chromium",      "version": major},
         ],
-        "fullVersion": chrome_version or "143.0.0.0",
+        "fullVersion": chrome_version or "156.0.0.0",
         "platform": plat_name,
         "platformVersion": plat_ver,
         "architecture": arch,
@@ -894,6 +897,16 @@ class StealthConfig:
         Whether running in Docker environment. Auto-detected by default.
     permissions : list[str]
         Browser permissions to grant.
+    apply_to_custom_binary : bool
+        Launch a user-selected browser (``channel`` / ``executable_path``)
+        exactly the way bridgic launches its bundled Chromium: the full
+        stealth Chrome flag set, and in headless mode the full binary with
+        ``--headless=new``. Default False, which keeps the long-standing
+        behaviour of skipping stealth Chrome flags for a user-selected binary.
+        Use it to run a patched full Chrome (system Chrome stable, or Chrome
+        for Testing's ``chrome`` build) with the same launch fingerprint as the
+        bundled Chromium. Not meant for ``chrome-headless-shell``, which is
+        always headless and does not take ``--headless=new``.
 
     Examples
     --------
@@ -914,6 +927,10 @@ class StealthConfig:
     permissions: List[str] = field(
         default_factory=lambda: ["clipboard-read", "clipboard-write", "notifications"]
     )
+    # Added last so positional StealthConfig(...) calls keep their meaning.
+    apply_to_custom_binary: bool = False
+    """Launch a user-selected channel/executable_path with the same stealth flags
+    and headless handling as the bundled Chromium. For full Chrome binaries only."""
 
 
 def _get_playwright_disabled_features() -> List[str]:
@@ -924,20 +941,48 @@ def _get_playwright_disabled_features() -> List[str]:
     stale on every Playwright upgrade), we parse it at runtime so our combined flag
     always stays in sync.
 
-    Returns an empty list if the file cannot be read (e.g. non-standard install).
+    The list's location depends on the Playwright version:
+
+    - <= 1.57: its own module, ``lib/server/chromium/chromiumSwitches.js``
+      (``const disabledFeatures = [...].filter(...)``).
+    - >= 1.61 (bundled driver): inlined into ``lib/coreBundle.js``
+      (``disabledFeatures = [...].filter(Boolean)``).
+
+    Getting this wrong is not cosmetic: bridgic appends its own
+    ``--disable-features`` flag, and Chrome honours only the last one, so an
+    empty list here silently re-enables every feature Playwright disables
+    (e.g. ``ThirdPartyStoragePartitioning``, and redirect fixes that request
+    interception depends on). A warning is logged when nothing is found.
     """
     import re as _re
+    lib = None
     try:
         import playwright as _pw
-        switches_js = Path(_pw.__file__).parent / "driver/package/lib/server/chromium/chromiumSwitches.js"
-        text = switches_js.read_text(encoding="utf-8")
-        # Locate the disabledFeatures array body: everything between the outer [ and ].filter
-        m = _re.search(r'const disabledFeatures\s*=.*?\[(.+?)\]\.filter', text, _re.DOTALL)
-        if not m:
-            return []
-        return [f for f in _re.findall(r'"([^"]+)"', m.group(1)) if f]
+        lib = Path(_pw.__file__).parent / "driver" / "package" / "lib"
+        for candidate in (lib / "server" / "chromium" / "chromiumSwitches.js", lib / "coreBundle.js"):
+            if not candidate.is_file():
+                continue
+            text = candidate.read_text(encoding="utf-8")
+            # The array body: everything between `disabledFeatures = [` (or, on
+            # <= 1.57, `disabledFeatures = (assistantMode) => [`) and `].filter`.
+            m = _re.search(r'\bdisabledFeatures\s*=[^\[]*\[(.*?)\]\.filter', text, _re.DOTALL)
+            if not m:
+                continue
+            # Drop `// ...` comments first - they sit between entries and can
+            # contain quoted words of their own.
+            body = _re.sub(r"//[^\n]*", "", m.group(1))
+            features = [f for f in _re.findall(r'"([^"]+)"', body) if f]
+            if features:
+                return features
     except Exception:
-        return []
+        logger.debug("Reading Playwright's disabled-features list failed", exc_info=True)
+    logger.warning(
+        "Could not read Playwright's default --disable-features list from %s; "
+        "bridgic's stealth --disable-features flag will override Playwright's "
+        "defaults. Check the Playwright version is supported.",
+        lib,
+    )
+    return []
 
 
 class StealthArgsBuilder:

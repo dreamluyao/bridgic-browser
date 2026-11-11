@@ -216,6 +216,8 @@ Leak paths no flag can close, documented rather than fixed: shell history for a 
 
 ### Snapshot modes
 
+The raw tree comes from Playwright's public `page.aria_snapshot(mode="ai")` (`SnapshotGenerator.page_snapshot_for_ai`). Its output format changes between Playwright minors (1.62 began dropping redundant container names and duplicate child lines), and bridgic refs hash role + name, so Playwright is pinned to one minor and upgrades are gated on `scripts/qa/compare-snapshots.py`.
+
 `get_snapshot(interactive=False, full_page=True)`:
 - `interactive=True` — flattened list of clickable/editable elements only (best for LLM action selection)
 - `full_page=False` — limit to viewport content only
@@ -237,6 +239,8 @@ Two distinct tools cover two distinct waiting problems — pick the one that mat
 Key decisions and constraints:
 - **New headless redirect** (`use_new_headless=True`, default): bridgic passes `headless=False` to Playwright (selecting the full Chromium binary) and manually adds `--headless=new` + scrollbar/audio/blink flags. `Browser._headless` = user's intent; `options["headless"]` = binary selection.
 - **Headed mode auto-switches to system Chrome**: Playwright's bundled "Chrome for Testing" is blocked by Google OAuth. When stealth is enabled in headed mode and system Chrome is detected, bridgic sets `channel="chrome"` automatically. `--test-type=` suppresses the "unsupported flag" warning banner.
+- **User-selected binary (`channel` / `executable_path`)** skips stealth Chrome flags by default. `StealthConfig.apply_to_custom_binary=True` launches it exactly like the bundled Chromium instead (full flags, headless via `--headless=new`, no headed auto-switch) - the supported way to run a patched full Chrome without changing the launch fingerprint. Not for `chrome-headless-shell`.
+- **Playwright's `--disable-features` list** is merged into bridgic's own flag (Chrome honours only the last one). `_get_playwright_disabled_features()` reads it from `chromiumSwitches.js` (<= 1.57) or the bundled `coreBundle.js` (>= 1.61); if it ever comes back empty, bridgic's flag silently re-enables everything Playwright disables, so `tests/unit/test_stealth.py` asserts the installed Playwright yields a list.
 - **JS init script is headless-only**: skipped in headed mode because `add_init_script()` runs in ALL frames including Cloudflare Turnstile's challenge iframe — patching `window.chrome`/`navigator.permissions.query`/WebGL inside it causes detectable inconsistencies that fail the challenge.
 - **Anti-toString (`_mkNative`)**: all patched functions return `"function name() { [native code] }"` via intercepted `Function.prototype.toString` to defeat DataDome/PerimeterX/Cloudflare `.toString()` probing.
 

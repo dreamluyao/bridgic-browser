@@ -115,6 +115,7 @@ Notes:
 | `enabled` | `true | false` | Default `true`. |
 | `disable_security` | `true | false` | Disables security features (testing only). |
 | `use_new_headless` | `true | false` | Default `true`. Use full Chromium binary with `--headless=new` instead of headless-shell. Only active when `enabled=true`, `headless=true`, and not using system Chrome (`channel`/`executable_path`). |
+| `apply_to_custom_binary` | `true | false` | Default `false`. When `channel` / `executable_path` is set, launch that binary exactly like the bundled Chromium (full stealth Chrome flags; headless via `--headless=new`) instead of skipping stealth Chrome flags. For running a patched full Chrome with an unchanged launch fingerprint; not for `chrome-headless-shell`. |
 | `in_docker` | `true | false` | Auto-detected by default. |
 | `permissions` | `string[]` | Default permissions for stealth context; top-level `permissions` overrides. |
 

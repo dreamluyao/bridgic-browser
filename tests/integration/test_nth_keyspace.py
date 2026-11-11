@@ -145,13 +145,19 @@ class TestUnnamedGenericChildText:
 
 @pytest.mark.integration
 class TestGroupRoleBilling:
-    """Verify generic "Billing" [nth=1] clicks the standalone <div>, not the <legend>."""
+    """Verify generic "Billing" clicks the standalone <div>, not the <legend>.
+
+    Playwright 1.62+ drops the <legend>'s own ``generic "Billing"`` line from
+    AI snapshots (it only repeats the enclosing ``group "Billing"`` name), so
+    the standalone <div> is now the only generic "Billing" (nth=0). Before
+    1.62 it was nth=1, after the legend.
+    """
 
     @pytest.mark.asyncio
-    async def test_generic_billing_nth1(self, browser):
+    async def test_generic_billing_targets_div(self, browser):
         snapshot = await _open_and_snapshot(browser)
-        ref = _find_ref(snapshot, "generic", "Billing", nth=1)
-        assert ref, "generic 'Billing' nth=1 not found"
+        ref = _find_ref(snapshot, "generic", "Billing", nth=0)
+        assert ref, "generic 'Billing' not found"
         result = await _click_and_read_log(browser, ref)
         assert "div-billing" in result, f"Expected div-billing, got: {result}"
 
@@ -255,13 +261,22 @@ class TestSnapshotStructure:
 
     @pytest.mark.asyncio
     async def test_generic_billing_count(self, browser):
-        """There should be 2 generic 'Billing': one <legend> (nth=0) and one <div> (nth=1)."""
+        """One group 'Billing' (the <fieldset>) and one generic 'Billing' (the <div>).
+
+        Playwright 1.62+ no longer emits the <legend> as a separate generic,
+        because its text only repeats the group's name.
+        """
         snapshot = await _open_and_snapshot(browser)
         billing_generics = [
             (ref, data) for ref, data in snapshot.refs.items()
             if data.role == "generic" and data.name == "Billing"
         ]
-        assert len(billing_generics) == 2, (
-            f"Expected 2 generic 'Billing', got {len(billing_generics)}: "
+        assert len(billing_generics) == 1, (
+            f"Expected 1 generic 'Billing', got {len(billing_generics)}: "
             f"{[(r, d.nth) for r, d in billing_generics]}"
         )
+        billing_groups = [
+            ref for ref, data in snapshot.refs.items()
+            if data.role == "group" and data.name == "Billing"
+        ]
+        assert len(billing_groups) == 1, "Expected the fieldset as group 'Billing'"

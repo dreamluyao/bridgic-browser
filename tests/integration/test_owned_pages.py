@@ -53,6 +53,7 @@ from ._chrome_utils import find_chrome_binary
 # Distinct port from the other CDP integration test files to avoid clashes
 # when pytest schedules them sequentially with leftover sockets.
 CDP_PORT = 9335
+ISOLATED_CDP_PORT = 9336
 CDP_HOST = "localhost"
 CHROME_BIN: str | None = find_chrome_binary()
 
@@ -125,12 +126,28 @@ def _wait_chrome(port: int, timeout: float = 20.0) -> None:
 @pytest.fixture(scope="module")
 def chrome_with_user_tabs() -> Iterator[str]:
     """Launch a real Chrome with USER_TABS pre-opened, yield CDP ws URL."""
+    yield from _launch_chrome(CDP_PORT)
+
+
+@pytest.fixture
+def isolated_chrome() -> Iterator[str]:
+    """A throwaway Chrome for tests that can leave it unusable for CDP.
+
+    Playwright >= 1.62 can leave a stuck target behind when a popup closes
+    itself on load, after which every later ``connect_over_cdp`` to that
+    Chrome hangs (microsoft/playwright#42882). Such tests must not share the
+    module-scoped Chrome, or they poison every test that runs after them.
+    """
+    yield from _launch_chrome(ISOLATED_CDP_PORT)
+
+
+def _launch_chrome(port: int) -> Iterator[str]:
     if CHROME_BIN is None:
         pytest.skip("Chrome/Chromium not found")
     tmpdir = tempfile.mkdtemp(prefix="bridgic_owned_pages_")
     args = [
         CHROME_BIN,
-        f"--remote-debugging-port={CDP_PORT}",
+        f"--remote-debugging-port={port}",
         f"--user-data-dir={tmpdir}",
         "--no-first-run",
         "--no-default-browser-check",
@@ -150,12 +167,12 @@ def chrome_with_user_tabs() -> Iterator[str]:
         args.extend(["--no-sandbox", "--disable-dev-shm-usage"])
     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        _wait_chrome(CDP_PORT)
+        _wait_chrome(port)
         for url in USER_TABS:
-            _open_tab_via_cdp_http(CDP_PORT, url)
+            _open_tab_via_cdp_http(port, url)
         # Brief settle so targets are registered before bridgic attaches.
         time.sleep(1.5)
-        yield _ws_url(CDP_PORT)
+        yield _ws_url(port)
     finally:
         proc.terminate()
         try:
@@ -377,28 +394,38 @@ async def test_followed_popup_self_close_heals_self_page(cdp_browser):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_self_closing_popup_link_end_to_end(cdp_browser):
+async def test_self_closing_popup_link_end_to_end(isolated_chrome):
     """End-to-end realistic repro: click a link whose target runs
     `window.close()` on load. Whether or not the popup is followed before it
-    dies, `self._page` must end up live and a snapshot must succeed."""
-    home = cdp_browser._page
-    await home.goto(LINK_SELF_CLOSING_POPUP, wait_until="domcontentloaded")
-    async with cdp_browser._context.expect_page() as info:
+    dies, `self._page` must end up live and a snapshot must succeed.
+
+    Runs on its own Chrome: on Playwright >= 1.62 the popup may never surface
+    as a `page` event and can be left as a stuck target, after which further
+    `connect_over_cdp` calls to that Chrome hang (microsoft/playwright#42882,
+    see docs/KNOWN_LIMITATIONS.md). So this test does not wait for a `page`
+    event; it asserts bridgic's own session stays usable either way.
+    """
+    browser = Browser(cdp=isolated_chrome, stealth=False, headless=True)
+    await browser._start()
+    try:
+        home = browser._page
+        await home.goto(LINK_SELF_CLOSING_POPUP, wait_until="domcontentloaded")
         await home.click("#lnk")
-    popup = await info.value
 
-    # Allow adoption/follow + self-close + heal to settle.
-    for _ in range(60):
-        cur = cdp_browser._page
-        if cur is not None and cur is not popup and not cur.is_closed():
-            break
-        await asyncio.sleep(0.05)
+        # Allow any adoption/follow + self-close + heal to settle.
+        for _ in range(60):
+            cur = browser._page
+            if cur is not None and not cur.is_closed():
+                break
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(1.0)
 
-    assert cdp_browser._page is not None
-    assert cdp_browser._page is not popup
-    assert not cdp_browser._page.is_closed()
-    snap = await cdp_browser.get_snapshot_text()
-    assert isinstance(snap, str)
+        assert browser._page is not None
+        assert not browser._page.is_closed()
+        snap = await browser.get_snapshot_text()
+        assert isinstance(snap, str)
+    finally:
+        await browser.close()
 
 
 @pytest.mark.integration

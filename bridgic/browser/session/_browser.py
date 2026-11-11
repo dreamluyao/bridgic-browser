@@ -888,7 +888,22 @@ class Browser:
         # Anti-detection still works via ignore_default_args
         # (removes --enable-automation) and the JS init script (patches
         # navigator.webdriver, plugins, chrome object, etc.).
-        _is_system_chrome = bool(self._channel or self._executable_path)
+        #
+        # Opt-in: StealthConfig.apply_to_custom_binary=True launches the
+        # user-selected binary exactly like the bundled Chromium (full stealth
+        # flags, and headless via the full binary + --headless=new), so a
+        # patched Chrome can replace the bundled one without changing the
+        # launch fingerprint. `_is_system_chrome` is then False for every
+        # decision below; `_custom_binary` still blocks the headed
+        # auto-switch, which would otherwise replace the user's binary.
+        _custom_binary = bool(self._channel or self._executable_path)
+        _stealth_on_custom_binary = (
+            _custom_binary
+            and self._stealth_config is not None
+            and self._stealth_config.enabled
+            and self._stealth_config.apply_to_custom_binary
+        )
+        _is_system_chrome = _custom_binary and not _stealth_on_custom_binary
 
         # In headed mode, auto-switch to system Chrome when available.
         # Reasons:
@@ -903,7 +918,7 @@ class Browser:
         # executable_path and the system Chrome binary is present.
         _auto_system_chrome = (
             not self._headless
-            and not _is_system_chrome
+            and not _custom_binary
             and _detect_system_chrome()
         )
         if _auto_system_chrome:
@@ -929,11 +944,13 @@ class Browser:
                 headless_intent=self._headless,
                 locale=self._locale,
             )
-            if _auto_system_chrome:
+            if _auto_system_chrome or (_stealth_on_custom_binary and not self._headless):
                 # System Chrome shows a "unsupported command-line flag" warning
                 # banner for --disable-blink-features.  --test-type= (empty value)
                 # tells Chrome to suppress all bad-flag warnings without adding
-                # any web-detectable side effects.
+                # any web-detectable side effects. A headed custom binary with
+                # apply_to_custom_binary gets the same treatment as the
+                # auto-switched system Chrome.
                 stealth_args.append("--test-type=")
             args_list.extend(stealth_args)
 
@@ -1582,8 +1599,8 @@ class Browser:
         try:
             sess = await self._context.new_cdp_session(page)
             ver = await sess.send("Browser.getVersion")
-            product = ver.get("product", "Chrome/143.0.0.0")
-            chrome_ver = product.split("/")[-1] if "/" in product else "143.0.0.0"
+            product = ver.get("product", "Chrome/156.0.0.0")
+            chrome_ver = product.split("/")[-1] if "/" in product else "156.0.0.0"
             ua = clean_headless_ua(ver.get("userAgent") or get_fallback_real_chrome_ua())
             # Emulation.setUserAgentOverride is the modern entry point — Network's
             # variant accepts the same params but silently drops userAgentMetadata
@@ -1649,7 +1666,7 @@ class Browser:
                 self._browser = await self._playwright.chromium.connect_over_cdp(self._cdp_resolved)
 
                 # Playwright invariant for connect_over_cdp() (verified
-                # against playwright-core 1.57):
+                # against playwright-core 1.57, 1.61, 1.64 and 1.65):
                 #   chromium.ts _connectOverCDPImpl always passes
                 #   persistent={noDefaultViewport: true}, so
                 #   crBrowser.ts:_connect skips the early `if (!options.persistent)`
@@ -1953,6 +1970,33 @@ class Browser:
     _VIDEO_FINALIZE_TIMEOUT = _timeouts.VIDEO_FINALIZE_S
 
     @staticmethod
+    def _find_playwright_driver_proc(pw: Any) -> Any:
+        """Return the Playwright Node driver subprocess, or ``None``.
+
+        The handle lives in private Playwright internals whose layout changed
+        in 1.65, so both known paths are tried:
+
+        - Playwright <= 1.64: ``pw._impl_obj._connection._transport._proc``
+          (``pw`` is the public wrapper; the connection hangs off its impl).
+        - Playwright >= 1.65: the transport is owned by the
+          ``PlaywrightContextManager`` that ``async_playwright()`` returns.
+          ``start()`` rebinds ``pw.stop`` to that manager's bound
+          ``__aexit__``, so ``pw.stop.__self__._client._transport._proc``.
+        """
+        paths = (
+            lambda: pw._impl_obj._connection._transport._proc,
+            lambda: pw.stop.__self__._client._transport._proc,
+        )
+        for path in paths:
+            try:
+                proc = path()
+            except AttributeError:
+                continue
+            if proc is not None:
+                return proc
+        return None
+
+    @staticmethod
     async def _force_kill_playwright_driver(pw: Any) -> None:
         """Force-kill the Playwright Node driver process (and its process group when safe).
 
@@ -1973,10 +2017,11 @@ class Browser:
         fall back to proc.kill() directly.
 
         Accesses internal Playwright transport — best-effort: silently ignored
-        if internals have changed.
+        if internals have changed. See ``_find_playwright_driver_proc`` for the
+        per-version attribute paths.
         """
         try:
-            proc = pw._connection._transport._proc  # type: ignore[union-attr]
+            proc = Browser._find_playwright_driver_proc(pw)
             if proc and proc.returncode is None:
                 killed_via_group = False
                 if sys.platform != "win32":

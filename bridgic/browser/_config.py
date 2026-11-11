@@ -31,7 +31,9 @@ class ConfigValidationError(ValueError):
 # table. Tuple values allow "bool-or-int", "str-or-dict" etc.
 _EXPECTED_TYPES: Dict[str, Any] = {
     "headless": bool,
-    "stealth": bool,
+    # bool, or a StealthConfig object ({"use_new_headless": false, ...}) -
+    # Browser() accepts both, and env-vars.md documents the object form.
+    "stealth": (bool, dict),
     "clear_user_data": bool,
     "user_data_dir": str,
     "cdp": str,

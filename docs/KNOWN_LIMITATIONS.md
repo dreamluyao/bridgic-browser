@@ -266,3 +266,23 @@ that take no secret - so it can wrap every tool call unconditionally.
 `get_snapshot()` returns `(empty)` / zero refs on classic `<frameset>`/`<frame>` portal pages, because the main-frame document has no `<body>` for the single `page_snapshot_for_ai()` call to recurse from - unlike modern `<iframe>`-in-`<body>` pages, which are fully supported. Workaround: use raw Playwright (`page.frame(name=...)` + locators) for these pages. See [docs/INTERNALS.md - Nested iframes and frame_path](INTERNALS.md#nested-iframes-and-frame_path).
 
 ---
+
+## CDP-borrowed Mode: Reconnect Hangs After a Popup That Closes Itself on Load
+
+### Symptom
+
+With `--cdp` / `Browser(cdp=...)` attached to your own running Chrome, a later connect to the same Chrome (the next `bridgic-browser --cdp ...` session, or `Browser(cdp=...)._start()`) hangs until it times out. It follows a page having opened a popup that runs `window.close()` immediately on load.
+
+### Root Cause
+
+An upstream Playwright bug, present in the Playwright versions bridgic 0.1.x uses (1.64.x, also seen on 1.65) and not in 1.61: the instantly self-closing popup is never reported as a `page` and can be left in Chrome as a stuck, blank target that no longer answers CDP. `connect_over_cdp` waits for every existing target to initialise, so one stuck target blocks the whole connect ([microsoft/playwright#42882](https://github.com/microsoft/playwright/issues/42882)). Reproduced with plain Playwright, no bridgic code involved.
+
+Launch modes (bridgic starts its own browser - the default, persistent or ephemeral profile) are not affected beyond the popup not being reported: the browser stays fully usable.
+
+### Workaround
+
+Close the stuck blank tab in that Chrome (it shows no URL), or restart that Chrome, then reconnect. bridgic deliberately does not close tabs it does not own in your Chrome.
+
+### Verification
+
+`tests/integration/test_owned_pages.py::test_self_closing_popup_link_end_to_end` runs this scenario on its own throwaway Chrome (`isolated_chrome` fixture) so the stuck target cannot hang the rest of that module.

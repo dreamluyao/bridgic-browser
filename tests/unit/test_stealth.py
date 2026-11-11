@@ -559,3 +559,69 @@ class TestCreateStealthConfig:
         assert "clipboard-read" in config.permissions
 
 
+
+
+# ---------------------------------------------------------------------------
+# _get_playwright_disabled_features — reading Playwright's default list
+# ---------------------------------------------------------------------------
+# bridgic appends its own --disable-features flag and Chrome honours only the
+# last one, so an empty result silently re-enables every feature Playwright
+# disables. These tests make a layout change in a future Playwright fail loudly.
+
+import logging
+import types
+
+import pytest
+
+from bridgic.browser.session import _stealth as _stealth_module
+
+
+def _fake_playwright(tmp_path, files: dict) -> types.SimpleNamespace:
+    pkg = tmp_path / "playwright"
+    for rel, content in files.items():
+        target = pkg / "driver" / "package" / "lib" / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    return types.SimpleNamespace(__file__=str(pkg / "__init__.py"))
+
+
+class TestPlaywrightDisabledFeatures:
+    def test_installed_playwright_list_is_found(self):
+        features = _stealth_module._get_playwright_disabled_features()
+        assert features, "Playwright's disabled-features list was not found"
+        # Disabled by every Playwright version bridgic has supported, and
+        # load-bearing for cross-origin OAuth iframes (see build_args).
+        assert "ThirdPartyStoragePartitioning" in features
+
+    def test_reads_standalone_module_layout(self, tmp_path, monkeypatch):
+        fake = _fake_playwright(tmp_path, {
+            "server/chromium/chromiumSwitches.js": (
+                'const disabledFeatures = (assistantMode) => [\n'
+                '  "AlphaFeature",\n'
+                '  assistantMode ? "BetaFeature" : "",\n'
+                '].filter(Boolean);\n'
+            ),
+        })
+        monkeypatch.setitem(__import__("sys").modules, "playwright", fake)
+        assert _stealth_module._get_playwright_disabled_features() == ["AlphaFeature", "BetaFeature"]
+
+    def test_reads_bundled_layout_and_ignores_comments(self, tmp_path, monkeypatch):
+        fake = _fake_playwright(tmp_path, {
+            "coreBundle.js": (
+                'var x = 1;\n'
+                '    disabledFeatures = [\n'
+                '      // See "NotAFeature" in this comment\n'
+                '      "AlphaFeature",\n'
+                '      "BetaFeature"\n'
+                '    ].filter(Boolean);\n'
+            ),
+        })
+        monkeypatch.setitem(__import__("sys").modules, "playwright", fake)
+        assert _stealth_module._get_playwright_disabled_features() == ["AlphaFeature", "BetaFeature"]
+
+    def test_missing_list_warns_and_returns_empty(self, tmp_path, monkeypatch, caplog):
+        fake = _fake_playwright(tmp_path, {"coreBundle.js": "var nothing = 1;\n"})
+        monkeypatch.setitem(__import__("sys").modules, "playwright", fake)
+        with caplog.at_level(logging.WARNING, logger=_stealth_module.__name__):
+            assert _stealth_module._get_playwright_disabled_features() == []
+        assert "disable-features" in caplog.text

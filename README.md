@@ -789,8 +789,63 @@ CLI client converts daemon failures into `BridgicBrowserCommandError`, and CLI o
 ### Requirements
 
 - Python 3.10+
-- Playwright 1.57+
+- Playwright 1.64.x (pinned; see below)
 - Pydantic 2.11+
+
+#### Playwright version pin and snapshot format
+
+bridgic pins Playwright to one minor version because its snapshots and refs are built on
+Playwright's AI-mode aria snapshot, which changes between releases. Since Playwright 1.62
+(bridgic on 1.64.x):
+
+- Names that only repeat visible child content are dropped from containers - e.g. a table
+  `row` is now unnamed (its cells still carry the text), and a `cell` holding a link is
+  unnamed (the link keeps its name).
+- Child lines that only repeat their parent's name are removed - `button "Save"` no longer
+  has a `generic: Save` child, and a `<legend>` no longer appears under its `group`.
+- Unnamed, non-clickable images are removed, and adjacent text is merged.
+
+Refs hash role + name, so refs of rows, de-duplicated generics and merged text change;
+refs of controls (buttons, links, textboxes, checkboxes, options, ...) were unchanged in
+our comparison. Automations that parse container names (e.g. `cell "Page 1 of 3"` or a
+row's name) should read the leaf cells or links instead.
+
+Upgrade Playwright deliberately: compare snapshots across the old and new version with
+`scripts/qa/compare-snapshots.py` before moving the pin.
+
+#### Keeping the browser patched
+
+`playwright install` downloads a Chromium frozen at Playwright's build (156 for 1.64.x),
+which vulnerability scanners will flag as it ages. bridgic launches that **full Chromium**
+by default (stealth mode runs it with `--headless=new`; `chrome-headless-shell` is only
+used with stealth off or `use_new_headless: false`).
+
+To run a patched browser with the **same launch flags** as the bundled one, point bridgic
+at a full Chrome and opt in with `apply_to_custom_binary`:
+
+```json
+{
+  "channel": "chrome",
+  "stealth": { "apply_to_custom_binary": true }
+}
+```
+
+- `"channel": "chrome"` uses system Chrome stable, patched by the OS (e.g.
+  `google-chrome-stable` from Google's apt repository). Alternatively set
+  `"executable_path"` to a full `chrome` build from
+  [Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/) that your
+  pipeline re-installs on each Chrome stable release.
+- Without `apply_to_custom_binary`, a `channel` / `executable_path` binary is launched
+  without bridgic's stealth Chrome flags (the JS init script and removal of
+  `--enable-automation` still apply) - the long-standing behaviour, unchanged.
+- `apply_to_custom_binary` is for full Chrome only, not `chrome-headless-shell`. To use a
+  newer headless shell instead, set `"executable_path"` to it with `"headless": true`
+  and leave the option off.
+- **Node.js:** Playwright runs its driver on a Node.js bundled in the wheel. Set
+  `PLAYWRIGHT_NODEJS_PATH` to a patched system Node.js if scanners flag the bundled one.
+
+A newer browser than Playwright was built against usually works but is not guaranteed;
+run the integration suite against your current browser on a schedule.
 
 ### Community
 

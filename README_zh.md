@@ -782,8 +782,54 @@ CLI 客户端将 daemon 失败转换为 `BridgicBrowserCommandError`，CLI 输�
 ### 环境要求
 
 - Python 3.10+
-- Playwright 1.57+
+- Playwright 1.64.x（固定版本，见下文）
 - Pydantic 2.11+
+
+#### Playwright 版本固定与 snapshot 格式
+
+bridgic 将 Playwright 固定在一个次版本上，因为 snapshot 和 ref 构建在 Playwright 的 AI 模式
+aria snapshot 之上，而它会随版本变化。自 Playwright 1.62 起（bridgic 使用 1.64.x）：
+
+- 容器上仅重复子节点可见内容的名称会被去掉——例如表格 `row` 不再有名称（文字仍在其单元格中），
+  包含链接的 `cell` 不再有名称（链接本身保留名称）。
+- 仅重复父节点名称的子行会被移除——`button "Save"` 下不再有 `generic: Save`，`<legend>` 也不再
+  出现在其 `group` 之下。
+- 无名称且不可点击的图片会被移除，相邻文本会被合并。
+
+ref 由 role + name 哈希生成，因此行、被去重的 generic 以及被合并的文本的 ref 会变化；在我们的对比中，
+控件（按钮、链接、输入框、复选框、选项等）的 ref 没有变化。解析容器名称的自动化
+（例如 `cell "Page 1 of 3"` 或行名称）应改为读取叶子单元格或链接。
+
+升级 Playwright 时请有计划地进行：在调整版本固定前，用 `scripts/qa/compare-snapshots.py` 对比新旧版本的 snapshot。
+
+#### 保持浏览器安全更新
+
+`playwright install` 下载的 Chromium 固定在 Playwright 构建时的版本（1.64.x 对应 156），时间久了会被
+漏洞扫描工具标记。bridgic 默认启动的是**完整版 Chromium**（stealth 模式下以 `--headless=new` 运行；
+只有关闭 stealth 或设置 `use_new_headless: false` 时才使用 `chrome-headless-shell`）。
+
+如需使用打过补丁的浏览器，并保持与内置浏览器**相同的启动参数**，请将 bridgic 指向完整版 Chrome，并开启
+`apply_to_custom_binary`：
+
+```json
+{
+  "channel": "chrome",
+  "stealth": { "apply_to_custom_binary": true }
+}
+```
+
+- `"channel": "chrome"` 使用由操作系统更新的 Chrome 稳定版（例如通过 Google 的 apt 源安装
+  `google-chrome-stable`）。也可以将 `"executable_path"` 指向
+  [Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/) 的完整版 `chrome`，
+  并由你的流水线在每次 Chrome 稳定版发布后重新安装。
+- 不开启 `apply_to_custom_binary` 时，`channel` / `executable_path` 指定的浏览器启动时不带 bridgic 的
+  stealth Chrome 参数（JS 注入脚本和移除 `--enable-automation` 仍然生效）——与以往行为一致，没有变化。
+- `apply_to_custom_binary` 仅适用于完整版 Chrome，不适用于 `chrome-headless-shell`。如需使用较新的
+  headless shell，请将 `"executable_path"` 指向它并设置 `"headless": true`，不要开启该选项。
+- **Node.js：** Playwright 的驱动运行在 wheel 内置的 Node.js 上。如扫描工具标记内置版本，可将
+  `PLAYWRIGHT_NODEJS_PATH` 指向已打补丁的系统 Node.js。
+
+比 Playwright 构建时更新的浏览器通常可以工作，但不保证兼容；请定期针对当前浏览器运行集成测试。
 
 ### 社区
 

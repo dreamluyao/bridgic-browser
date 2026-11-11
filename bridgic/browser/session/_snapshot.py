@@ -1431,17 +1431,15 @@ class SnapshotGenerator:
         return False
 
     async def page_snapshot_for_ai(self, page: AsyncPage) -> str:
-        """Get Playwright internal snapshot for AI.
+        """Get Playwright's AI-mode aria snapshot of ``page``.
 
-        WARNING: This method uses Playwright's private/internal API (_impl_obj, _channel).
-        These APIs are not part of Playwright's public contract and may change or break
-        in future Playwright versions without notice. When the private attributes are
-        unavailable (e.g. Playwright renamed them in a major release), falls back to the
-        public ``page.accessibility.snapshot()`` API so ref generation still works —
-        at reduced quality.
-
-        The 'snapshotForAI' command is an internal Playwright feature that returns
-        a structured accessibility tree optimized for AI consumption.
+        Uses the public ``page.aria_snapshot(mode="ai")`` API (Playwright 1.61+),
+        which replaced the private ``snapshotForAI`` protocol command earlier
+        versions exposed. The output is the YAML-ish tree the parser below
+        expects: ``- role "name" [ref=e369] [cursor=pointer]`` lines, with
+        iframe content inlined under ``- iframe [ref=...]`` using ``f<N>e<M>``
+        refs. Those refs are registered with Playwright's ``aria-ref=``
+        selector engine, which :meth:`Browser.get_element_by_ref` relies on.
 
         Parameters
         ----------
@@ -1451,80 +1449,10 @@ class SnapshotGenerator:
         Returns
         -------
         str
-            Raw snapshot string returned by Playwright `snapshotForAI`, or a
-            best-effort YAML-ish rendering of the public accessibility tree
-            when the private API is unavailable.
+            Raw AI-mode aria snapshot text (empty string if Playwright returns
+            nothing).
         """
-        try:
-            page_impl = page._impl_obj  # type: ignore[attr-defined]
-            channel = page_impl._channel
-            timeout_settings = page_impl._timeout_settings
-        except AttributeError as exc:
-            logger.warning(
-                "Playwright private API (page._impl_obj / _channel / "
-                "_timeout_settings) unavailable (%s); falling back to "
-                "accessibility.snapshot() — ref quality is reduced. "
-                "Pin playwright to a compatible version to restore full output.",
-                exc,
-            )
-            return await self._fallback_accessibility_snapshot(page)
-        try:
-            result = await channel.send_return_as_dict(
-                "snapshotForAI",
-                timeout_settings.timeout,
-                {"track": None, "timeout": 30000},
-                is_internal=True,
-            )
-        except AttributeError as exc:
-            logger.warning(
-                "Playwright snapshotForAI internal call signature changed (%s); "
-                "falling back to accessibility.snapshot()",
-                exc,
-            )
-            return await self._fallback_accessibility_snapshot(page)
-        full_data = result.get("full")
-        return full_data
-
-    async def _fallback_accessibility_snapshot(self, page: AsyncPage) -> str:
-        """Render ``page.accessibility.snapshot()`` as a YAML-ish string.
-
-        Output shape mimics Playwright's ``snapshotForAI`` (``- role "name"`` lines)
-        enough for the downstream parser to recover refs. Less detail (no
-        ``[cursor=pointer]``, no ``[disabled]`` hints) is reported — this is a
-        graceful degradation path, not a long-term substitute for the private API.
-
-        **Performance note**: this fallback emits NO ``[ref=<playwright_ref>]``
-        suffix, so :attr:`RefData.playwright_ref` is empty for every element
-        it produces. Consequence: :meth:`Browser.get_element_by_ref` skips the
-        O(1) aria-ref fast path entirely and rebuilds every locator from role
-        + name + frame_path + nth via Playwright's ``get_by_role``. On a
-        1000-ref page per-call overhead goes from ~1 ms to ~50–200 ms. Pin
-        a compatible Playwright version in ``pyproject.toml`` to restore the
-        fast path.
-        """
-        try:
-            tree = await page.accessibility.snapshot()
-        except Exception as exc:
-            logger.warning("accessibility.snapshot() fallback failed: %s", exc)
-            return ""
-        if not tree:
-            return ""
-
-        lines: List[str] = []
-
-        def _walk(node: Dict[str, Any], depth: int) -> None:
-            role = str(node.get("role") or "generic")
-            name = node.get("name")
-            indent = "  " * depth
-            if name:
-                lines.append(f'{indent}- {role} "{name}"')
-            else:
-                lines.append(f"{indent}- {role}")
-            for child in node.get("children") or []:
-                _walk(child, depth + 1)
-
-        _walk(tree, 0)
-        return "\n".join(lines)
+        return await page.aria_snapshot(mode="ai", timeout=30_000) or ""
 
     def _process_page_snapshot_for_ai(
         self,

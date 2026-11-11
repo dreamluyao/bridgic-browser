@@ -634,9 +634,11 @@ class TestLocatorResolution:
         )
         assert snapshot is not None
 
+        # `row` is deliberately absent: Playwright 1.62+ drops a row's
+        # name-from-content in AI snapshots (its cells still carry the text),
+        # so rows are checked separately below as unnamed-but-resolvable.
         target_roles = {
             "listitem",
-            "row",
             "cell",
             "gridcell",
             "columnheader",
@@ -657,6 +659,13 @@ class TestLocatorResolution:
                 assert locator is not None, f"Failed to resolve {role} ref: {ref}"
                 count = await locator.count()
                 assert count > 0, f"Resolved locator for {role} ref {ref} has count=0"
+
+        row_refs = [ref for ref, data in snapshot.refs.items() if data.role == "row"]
+        assert row_refs, "Fixture missing row refs"
+        for ref in row_refs:
+            locator = await role_text_match_browser.get_element_by_ref(ref)
+            assert locator is not None, f"Failed to resolve row ref: {ref}"
+            assert await locator.count() == 1, f"Row ref {ref} did not resolve uniquely"
 
     @pytest.mark.asyncio
     async def test_role_text_match_refs_survive_prefilter_in_viewport_mode(

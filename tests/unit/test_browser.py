@@ -314,6 +314,84 @@ class TestBrowserLaunchOptions:
             assert "channel" not in options
 
 
+class TestApplyStealthToCustomBinary:
+    """StealthConfig.apply_to_custom_binary: a user-selected binary is launched
+    exactly like the bundled Chromium, so a patched Chrome can replace the
+    bundled one without changing the launch fingerprint."""
+
+    @staticmethod
+    def _without_binary(options):
+        return {k: v for k, v in options.items() if k not in ("executable_path", "channel")}
+
+    def test_headless_executable_path_matches_bundled_launch(self):
+        bundled = Browser(headless=True, stealth=StealthConfig())._get_launch_options()
+        custom = Browser(
+            headless=True,
+            stealth=StealthConfig(apply_to_custom_binary=True),
+            executable_path="/opt/chrome/chrome",
+        )._get_launch_options()
+
+        assert custom["executable_path"] == Path("/opt/chrome/chrome")
+        assert self._without_binary(custom) == self._without_binary(bundled)
+        assert custom["headless"] is False
+        assert "--headless=new" in custom["args"]
+
+    def test_headless_channel_matches_bundled_launch(self):
+        bundled = Browser(headless=True, stealth=StealthConfig())._get_launch_options()
+        custom = Browser(
+            headless=True,
+            stealth=StealthConfig(apply_to_custom_binary=True),
+            channel="chrome",
+        )._get_launch_options()
+
+        assert custom["channel"] == "chrome"
+        assert self._without_binary(custom) == self._without_binary(bundled)
+
+    def test_default_keeps_existing_custom_binary_behaviour(self):
+        """Without the opt-in, a custom binary still skips stealth Chrome flags."""
+        options = Browser(
+            headless=True, stealth=True, executable_path="/opt/chrome/chrome"
+        )._get_launch_options()
+
+        assert options["headless"] is True
+        assert "--headless=new" not in options.get("args", [])
+        assert not any(a.startswith("--disable-features=") for a in options.get("args", []))
+
+    def test_headed_matches_auto_switched_system_chrome(self):
+        """Headed: same flags as bridgic's auto-switch to system Chrome, and the
+        user's binary is not replaced by the auto-switch."""
+        with patch("bridgic.browser.session._browser._detect_system_chrome", return_value=True):
+            auto = Browser(headless=False, stealth=StealthConfig())._get_launch_options()
+            custom = Browser(
+                headless=False,
+                stealth=StealthConfig(apply_to_custom_binary=True),
+                executable_path="/opt/chrome/chrome",
+            )._get_launch_options()
+
+        assert auto["channel"] == "chrome"
+        assert "channel" not in custom
+        assert custom["executable_path"] == Path("/opt/chrome/chrome")
+        assert custom["args"] == auto["args"]
+        assert "--test-type=" in custom["args"]
+
+    def test_no_effect_when_stealth_disabled(self):
+        options = Browser(
+            headless=True,
+            stealth=StealthConfig(enabled=False, apply_to_custom_binary=True),
+            executable_path="/opt/chrome/chrome",
+        )._get_launch_options()
+
+        assert options["headless"] is True
+        assert "--headless=new" not in options.get("args", [])
+
+    def test_positional_stealth_config_unchanged(self):
+        """The new field is last, so positional construction keeps its meaning."""
+        cfg = StealthConfig(True, False, False, True)
+        assert cfg.use_new_headless is False
+        assert cfg.in_docker is True
+        assert cfg.apply_to_custom_binary is False
+
+
 class TestBrowserContextOptions:
     """Tests for Browser context options generation."""
 
@@ -4801,3 +4879,48 @@ class TestWrapJsForCdpEval:
         wrapped = _browser_module._wrap_js_for_cdp_eval(pathological)
         import json as _json
         assert _json.dumps(pathological) in wrapped
+
+
+# ---------------------------------------------------------------------------
+# _find_playwright_driver_proc — driver subprocess lookup across layouts
+# ---------------------------------------------------------------------------
+# Playwright 1.65 moved the driver transport from the connection (reached via
+# the public wrapper's ``_impl_obj``) to the context manager that
+# ``async_playwright()`` returns. Both layouts must resolve.
+
+
+class TestFindPlaywrightDriverProc:
+    def test_layout_up_to_1_64(self) -> None:
+        proc = object()
+        pw = SimpleNamespace(
+            _impl_obj=SimpleNamespace(
+                _connection=SimpleNamespace(_transport=SimpleNamespace(_proc=proc))
+            )
+        )
+        assert Browser._find_playwright_driver_proc(pw) is proc
+
+    def test_layout_from_1_65(self) -> None:
+        proc = object()
+
+        class _Manager:
+            def __init__(self) -> None:
+                self._client = SimpleNamespace(_transport=SimpleNamespace(_proc=proc))
+
+            async def __aexit__(self, *args) -> None:
+                return None
+
+        manager = _Manager()
+        # start() rebinds the wrapper's stop to the manager's bound __aexit__,
+        # and the 1.65 wrapper has no ``_connection`` on its impl.
+        pw = SimpleNamespace(_impl_obj=SimpleNamespace(), stop=manager.__aexit__)
+        assert Browser._find_playwright_driver_proc(pw) is proc
+
+    def test_unknown_layout_returns_none(self) -> None:
+        pw = SimpleNamespace(_impl_obj=SimpleNamespace(), stop=lambda: None)
+        assert Browser._find_playwright_driver_proc(pw) is None
+
+    @pytest.mark.asyncio
+    async def test_force_kill_is_noop_when_proc_not_found(self) -> None:
+        pw = SimpleNamespace(_impl_obj=SimpleNamespace(), stop=lambda: None)
+        # Must not raise.
+        await Browser._force_kill_playwright_driver(pw)

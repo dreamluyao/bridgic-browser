@@ -373,6 +373,30 @@ class TestBrowserConfigIntegration:
 
         assert browser.stealth_enabled is False
 
+    def test_config_stealth_object(self, tmp_path):
+        """The documented `"stealth": {...}` object form is accepted and applied."""
+        from bridgic.browser.session._browser import Browser
+
+        fake_browser_home = tmp_path / ".bridgic"
+        fake_browser_home.mkdir()
+        (fake_browser_home / "bridgic-browser.json").write_text(
+            json.dumps({"stealth": {"apply_to_custom_binary": True, "use_new_headless": False}})
+        )
+
+        mock_local = MagicMock()
+        mock_local.is_file.return_value = False
+        with (
+            patch("bridgic.browser._config.BRIDGIC_BROWSER_HOME", fake_browser_home),
+            patch("bridgic.browser._config.Path", return_value=mock_local),
+            patch.dict(os.environ, {}, clear=False),
+        ):
+            os.environ.pop("BRIDGIC_BROWSER_JSON", None)
+            browser = Browser()
+
+        assert browser.stealth_enabled is True
+        assert browser._stealth_config.apply_to_custom_binary is True
+        assert browser._stealth_config.use_new_headless is False
+
     def test_explicit_stealth_overrides_config(self, tmp_path):
         """Browser(stealth=True) overrides config's stealth=false."""
         from bridgic.browser.session._browser import Browser
