@@ -790,15 +790,17 @@ CLI 客户端将 daemon 失败转换为 `BridgicBrowserCommandError`，CLI 输�
 bridgic 将 Playwright 固定在一个次版本上，因为 snapshot 和 ref 构建在 Playwright 的 AI 模式
 aria snapshot 之上，而它会随版本变化。自 Playwright 1.62 起（bridgic 使用 1.64.x）：
 
-- 容器上仅重复子节点可见内容的名称会被去掉——例如表格 `row` 不再有名称（文字仍在其单元格中），
-  包含链接的 `cell` 不再有名称（链接本身保留名称）。
+- 名称由其内容计算得出的元素，如果组成该名称的元素已在其下方单独输出，则该元素**不再输出名称**；
+  名称保留在这些子元素上。例如：表格 `row`（其单元格）、包含链接的 `cell`、由 `<img>`/`<svg>`
+  命名的图标链接或按钮（`link` > `img "PDF Image"`）、包裹按钮的链接、包裹链接的 `menuitem`。
+  由自身文本、label、`aria-label` 或 `title` 命名的元素保留名称。
 - 仅重复父节点名称的子行会被移除——`button "Save"` 下不再有 `generic: Save`，`<legend>` 也不再
   出现在其 `group` 之下。
-- 无名称且不可点击的图片会被移除，相邻文本会被合并。
+- 无名称且不可点击的图片会被移除，相邻文本会被合并，没有 label 的数字输入框以其 placeholder 命名。
 
-ref 由 role + name 哈希生成，因此行、被去重的 generic 以及被合并的文本的 ref 会变化；在我们的对比中，
-控件（按钮、链接、输入框、复选框、选项等）的 ref 没有变化。解析容器名称的自动化
-（例如 `cell "Page 1 of 3"` 或行名称）应改为读取叶子单元格或链接。
+ref 由 role + name 哈希生成，因此名称发生变化的元素其 ref 也随之变化——包括上述图标链接和按钮。
+匹配 `- role "name"` 行的自动化应将名称视为可选，并从实际输出该名称的那一行读取；
+`scripts/qa/scan-snapshot-format-risks.py <project>` 可找出受影响的代码。
 
 升级 Playwright 时请有计划地进行：在调整版本固定前，用 `scripts/qa/compare-snapshots.py` 对比新旧版本的 snapshot。
 

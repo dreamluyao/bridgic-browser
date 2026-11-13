@@ -2559,7 +2559,7 @@ class TestIframeHandling:
         locator = gen.get_locator_from_ref_async(page, "a1b2c3d4", refs)
 
         assert locator is scoped_locator
-        page.frame_locator.assert_called_once_with("iframe")
+        page.frame_locator.assert_called_once_with("iframe, frame")
         frame_locator_obj.nth.assert_called_once_with(0)
         nth_frame.get_by_role.assert_called_once_with("button", name="Go", exact=True)
         page.get_by_role.assert_not_called()
@@ -2613,7 +2613,7 @@ class TestIframeHandling:
 
         gen.get_locator_from_ref_async(page, "a1b2c3d4", refs)
 
-        page.frame_locator.assert_called_once_with("iframe")
+        page.frame_locator.assert_called_once_with("iframe, frame")
         frame_locator_obj.nth.assert_called_once_with(1)
 
     def test_iframe_text_leaf_role_uses_frame_get_by_text(
@@ -2673,7 +2673,7 @@ class TestIframeHandling:
         locator = gen.get_locator_from_ref_async(page, "a1b2c3d4", refs)
 
         assert locator is nth_locator
-        page.frame_locator.assert_called_once_with("iframe")
+        page.frame_locator.assert_called_once_with("iframe, frame")
         frame_locator_obj.nth.assert_called_once_with(0)
         nth_frame.get_by_role.assert_called_once_with("button", name="OK", exact=True)
         base_locator.nth.assert_called_once_with(2)
@@ -2902,9 +2902,9 @@ class TestIframeHandling:
         locator = gen.get_locator_from_ref_async(page, "a1b2c3d4", refs)
 
         assert locator is scoped_locator
-        page.frame_locator.assert_called_once_with("iframe")
+        page.frame_locator.assert_called_once_with("iframe, frame")
         outer_fl.nth.assert_called_once_with(0)
-        outer_nth.frame_locator.assert_called_once_with("iframe")
+        outer_nth.frame_locator.assert_called_once_with("iframe, frame")
         inner_fl.nth.assert_called_once_with(0)
         inner_nth.get_by_role.assert_called_once_with("button", name="Play", exact=True)
 
@@ -4011,7 +4011,7 @@ class TestDetectPasswordRefs:
         result = await gen._detect_password_refs(page, refs)
 
         assert result == {"abc12345"}
-        page.frame_locator.assert_called_once_with("iframe")
+        page.frame_locator.assert_called_once_with("iframe, frame")
         frame_locator.nth.assert_called_once_with(0)
 
     @pytest.mark.asyncio

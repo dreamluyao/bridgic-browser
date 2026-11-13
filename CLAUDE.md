@@ -216,7 +216,7 @@ Leak paths no flag can close, documented rather than fixed: shell history for a 
 
 ### Snapshot modes
 
-The raw tree comes from Playwright's public `page.aria_snapshot(mode="ai")` (`SnapshotGenerator.page_snapshot_for_ai`). Its output format changes between Playwright minors (1.62 began dropping redundant container names and duplicate child lines), and bridgic refs hash role + name, so Playwright is pinned to one minor and upgrades are gated on `scripts/qa/compare-snapshots.py`.
+The raw tree comes from Playwright's public `page.aria_snapshot(mode="ai")` (`SnapshotGenerator.page_snapshot_for_ai`). It inlines `<iframe>` and legacy `<frame>` content alike, so frame scoping uses `FRAME_ELEMENT_SELECTOR` (`"iframe, frame"`). Its output format changes between Playwright minors (since 1.62 an element whose name was computed from content is printed unnamed when the parts of that name are printed beneath it - rows, icon links/buttons, wrappers - and duplicate child lines are removed), and bridgic refs hash role + name, so Playwright is pinned to one minor and upgrades are gated on `scripts/qa/compare-snapshots.py`.
 
 `get_snapshot(interactive=False, full_page=True)`:
 - `interactive=True` — flattened list of clickable/editable elements only (best for LLM action selection)
@@ -295,13 +295,13 @@ For detailed implementation notes on client/daemon/commands, see [`docs/INTERNAL
 
 ## Ref System Internals
 
-bridgic has **two co-existing ref systems**: the stable bridgic ref (`"8d4b03a9"`, SHA-256 based, stable across snapshots) and the ephemeral playwright_ref (`"e369"`, per-snapshot incrementing integer, used for O(1) DOM lookup). `get_element_by_ref()` uses a **two-phase lookup**: first tries the aria-ref fast path (O(1) Map lookup via playwright_ref), then falls back to a CSS rebuild path with 6 strategy tiers. All paths chain `frame_locator("iframe").nth(n)` per `frame_path` level for iframe support.
+bridgic has **two co-existing ref systems**: the stable bridgic ref (`"8d4b03a9"`, SHA-256 based, stable across snapshots) and the ephemeral playwright_ref (`"e369"`, per-snapshot incrementing integer, used for O(1) DOM lookup). `get_element_by_ref()` uses a **two-phase lookup**: first tries the aria-ref fast path (O(1) Map lookup via playwright_ref), then falls back to a CSS rebuild path with 6 strategy tiers. All paths chain `frame_locator(FRAME_ELEMENT_SELECTOR).nth(n)` (`"iframe, frame"`) per `frame_path` level for iframe and legacy frame support.
 
 Key constraints:
 - `frame_path` (per-level local indices) is unrelated to Playwright's `frame.seq` (page-level global counter).
 - **Covered-element check** uses `window.parent !== window` (not `window.frameElement !== null`) to detect iframes — the latter returns `null` under `file://` protocol. Iframe elements skip the check entirely because `bounding_box()` returns main-viewport coordinates while `elementFromPoint()` uses iframe-local coordinates.
 - **Small icon rule**: icons 10–50 px are interactive only with `data-action` or `aria-label` (not `classAndId` — too many false positives).
-- **Bounded resolution retry**: `get_element_by_ref(ref, timeout=...)` defaults to `timeout=0.0` (original single-shot behavior — a miss returns `None` immediately). Every ref-based action/read tool passes a small non-zero timeout (`_timeouts.REF_RESOLVE_S`, default 5s) so a ref that hadn't rendered yet at snapshot time gets a bounded number of re-snapshot-and-retry attempts instead of failing the whole call on a timing race. This is a safety net for small gaps, not a substitute for gating on content known to load slowly — see `wait_for_element` below.
+- **Bounded resolution retry**: `get_element_by_ref(ref, timeout=...)` defaults to `timeout=0.0` (original single-shot behavior — a miss returns `None` immediately). Every ref-based action/read tool passes a small non-zero timeout (`_timeouts.REF_RESOLVE_S`, default 10s, env `BRIDGIC_REF_RESOLVE_TIMEOUT`) so a ref that hadn't rendered yet at snapshot time gets a bounded number of re-snapshot-and-retry attempts instead of failing the whole call on a timing race. This is a safety net for small gaps, not a substitute for gating on content known to load slowly — see `wait_for_element` below.
 
 For complete source-level documentation of Playwright internals, ref generation, lookup strategies, and iframe handling, see [`docs/INTERNALS.md`](docs/INTERNALS.md).
 

@@ -73,6 +73,12 @@ logger = logging.getLogger(__name__)
 # between chunks. 500 is comfortable for 1000–5000 ref pages.
 _BATCH_INFO_CHUNK_SIZE = 500
 
+# Selector for the frame elements a snapshot's ``frame_path`` indexes into.
+# Playwright's AI snapshot (1.62+) inlines legacy ``<frame>`` content the same
+# way as ``<iframe>`` content, in DOM order, so both must match - with
+# ``"iframe"`` alone every ref inside a ``<frameset>`` page fails to resolve.
+FRAME_ELEMENT_SELECTOR = "iframe, frame"
+
 
 # Phase 1 of the three-phase evaluate strategy:
 # Called once before the chunk loop. Runs querySelectorAll for every unique
@@ -2261,7 +2267,7 @@ class SnapshotGenerator:
                 scope: "AsyncPage | AsyncFrameLocator" = page
                 if data.frame_path:
                     for local_nth in data.frame_path:
-                        scope = scope.frame_locator("iframe").nth(local_nth)
+                        scope = scope.frame_locator(FRAME_ELEMENT_SELECTOR).nth(local_nth)
                 is_password = await scope.locator(
                     f"aria-ref={data.playwright_ref}"
                 ).evaluate("el => el.tagName === 'INPUT' && el.type === 'password'")
@@ -2403,7 +2409,7 @@ class SnapshotGenerator:
         scope: "AsyncPage | AsyncFrameLocator" = page
         if ref_data.frame_path:
             for local_nth in ref_data.frame_path:
-                scope = scope.frame_locator("iframe").nth(local_nth)
+                scope = scope.frame_locator(FRAME_ELEMENT_SELECTOR).nth(local_nth)
 
         # Build locator by signal strength:
         # 1) Semantic role+name

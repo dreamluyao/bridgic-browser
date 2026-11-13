@@ -798,17 +798,21 @@ bridgic pins Playwright to one minor version because its snapshots and refs are 
 Playwright's AI-mode aria snapshot, which changes between releases. Since Playwright 1.62
 (bridgic on 1.64.x):
 
-- Names that only repeat visible child content are dropped from containers - e.g. a table
-  `row` is now unnamed (its cells still carry the text), and a `cell` holding a link is
-  unnamed (the link keeps its name).
+- An element whose name was computed from its content is printed **without a name** when the
+  elements that make up that name are printed beneath it; the name stays on those children.
+  Examples: a table `row` (its cells), a `cell` holding a link, an icon link or button named
+  by its `<img>`/`<svg>` (`link` > `img "PDF Image"`), a link wrapping a button, a `menuitem`
+  wrapping a link. Elements named by their own text, a label, `aria-label` or `title` keep
+  their names.
 - Child lines that only repeat their parent's name are removed - `button "Save"` no longer
   has a `generic: Save` child, and a `<legend>` no longer appears under its `group`.
-- Unnamed, non-clickable images are removed, and adjacent text is merged.
+- Unnamed, non-clickable images are removed, adjacent text is merged, and an unlabelled
+  number input is named by its placeholder.
 
-Refs hash role + name, so refs of rows, de-duplicated generics and merged text change;
-refs of controls (buttons, links, textboxes, checkboxes, options, ...) were unchanged in
-our comparison. Automations that parse container names (e.g. `cell "Page 1 of 3"` or a
-row's name) should read the leaf cells or links instead.
+Refs hash role + name, so the refs of every element whose name changed change too -
+including such icon links and buttons. Automations that match `- role "name"` lines should
+match the name as optional and read it from the line that prints it;
+`scripts/qa/scan-snapshot-format-risks.py <project>` finds code affected by this.
 
 Upgrade Playwright deliberately: compare snapshots across the old and new version with
 `scripts/qa/compare-snapshots.py` before moving the pin.

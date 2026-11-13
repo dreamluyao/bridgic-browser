@@ -87,6 +87,7 @@ usage site has moved to :mod:`._locator_utils`."""
 from pydantic import BaseModel
 
 from ._snapshot import (
+    FRAME_ELEMENT_SELECTOR,
     EnhancedSnapshot,
     SnapshotGenerator,
     SnapshotOptions,
@@ -3931,7 +3932,7 @@ class Browser:
                     ar_scope = self._page
                     if ref_data.frame_path:
                         for local_nth in ref_data.frame_path:
-                            ar_scope = ar_scope.frame_locator("iframe").nth(local_nth)
+                            ar_scope = ar_scope.frame_locator(FRAME_ELEMENT_SELECTOR).nth(local_nth)
                     ar_locator = ar_scope.locator(f"aria-ref={ref_data.playwright_ref}")
                     ar_count = await ar_locator.count()
                     if ar_count == 1:
@@ -3983,7 +3984,7 @@ class Browser:
                         scope = self._page
                         if ref_data.frame_path:
                             for local_nth in ref_data.frame_path:
-                                scope = scope.frame_locator("iframe").nth(local_nth)
+                                scope = scope.frame_locator(FRAME_ELEMENT_SELECTOR).nth(local_nth)
                         role_name_locator = scope.get_by_role(
                             ref_data.role,
                             name=ref_data.name,

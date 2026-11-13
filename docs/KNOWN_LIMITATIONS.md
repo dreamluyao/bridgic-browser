@@ -261,12 +261,6 @@ that take no secret - so it can wrap every tool call unconditionally.
 
 ---
 
-## Legacy Frameset Pages Return an Empty Snapshot
-
-`get_snapshot()` returns `(empty)` / zero refs on classic `<frameset>`/`<frame>` portal pages, because the main-frame document has no `<body>` for the single `page_snapshot_for_ai()` call to recurse from - unlike modern `<iframe>`-in-`<body>` pages, which are fully supported. Workaround: use raw Playwright (`page.frame(name=...)` + locators) for these pages. See [docs/INTERNALS.md - Nested iframes and frame_path](INTERNALS.md#nested-iframes-and-frame_path).
-
----
-
 ## CDP-borrowed Mode: Reconnect Hangs After a Popup That Closes Itself on Load
 
 ### Symptom

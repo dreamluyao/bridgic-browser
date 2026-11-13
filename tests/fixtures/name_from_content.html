@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head><title>Names computed from content</title></head>
+<body>
+<!--
+  Elements whose accessible name is computed from their content, next to
+  elements named by their own text or a label. Playwright 1.62+ AI snapshots
+  print the first kind without a name when the parts of that name are printed
+  beneath it, which changes their bridgic refs. scripts/qa/compare-snapshots.py
+  uses this page (tests/fixtures/*.html) so an upgrade shows that drift.
+-->
+<h2>Named from child elements</h2>
+<a href="#pdf" id="icon-link"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="16" height="16" alt="PDF Image"></a>
+<button id="icon-button"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="16" height="16" alt="Print"></button>
+<button id="svg-button"><svg role="img" aria-label="Close" width="16" height="16"><rect width="16" height="16"/></svg></button>
+<a href="#dl" id="text-img-link">Download <img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="16" height="16" alt="icon"></a>
+<a href="#clients" id="link-button"><button>View Clients</button></a>
+<ul role="menu"><li role="menuitem"><a href="#agency">Agency</a></li></ul>
+<table>
+  <tr><th>Document</th><th>Status</th></tr>
+  <tr><td><a href="#doc">Doc.pdf</a></td><td>Pending</td></tr>
+</table>
+
+<h2>Named by own text or label</h2>
+<button id="text-button"><span>Save</span></button>
+<button id="label-button" aria-label="Delete"><span>x</span></button>
+<a href="#home">Home</a>
+<select aria-label="Agent"><option>A</option></select>
+<div role="tablist"><div role="tab"><span>Settings</span></div></div>
+</body>
+</html>

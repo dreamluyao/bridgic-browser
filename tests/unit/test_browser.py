@@ -2184,8 +2184,8 @@ class TestGetElementByRefAriaRef:
         result = await browser.get_element_by_ref("myref")
 
         assert result is ar_locator
-        # page.frame_locator("iframe") called once for the single frame_path level
-        browser._page.frame_locator.assert_called_once_with("iframe")
+        # page.frame_locator("iframe, frame") called once for the single frame_path level
+        browser._page.frame_locator.assert_called_once_with("iframe, frame")
         frame_locator_mock.nth.assert_called_once_with(0)
         nth_mock.locator.assert_called_once_with("aria-ref=f1e99")
 

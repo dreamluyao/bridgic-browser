@@ -232,7 +232,7 @@ Phase 1: aria-ref fast path (O(1))
   Implementation:
     scope = page
     for nth in ref_data.frame_path:          # build scope chain following frame_path
-        scope = scope.frame_locator("iframe").nth(nth)
+        scope = scope.frame_locator(FRAME_ELEMENT_SELECTOR).nth(nth)
     locator = scope.locator(f"aria-ref={ref_data.playwright_ref}")
     count = await locator.count()
     count == 1 → return directly (Playwright's _jumpToAriaRefFrameIfNeeded guarantees routing)
@@ -248,7 +248,7 @@ Phase 2: CSS rebuild path (get_locator_from_ref_async)
     4) STRUCTURAL_NOISE_ROLES with match_text            ← CSS-scoped + filter(has_text) + nth
     5) STRUCTURAL_NOISE_ROLES child-anchor path          ← unnamed noise with no text
     6) get_by_role(role)                                 ← bare role fallback when no name
-  scope: chain frame_locator("iframe").nth(n) per frame_path level first
+  scope: chain frame_locator(FRAME_ELEMENT_SELECTOR).nth(n) per frame_path level first
   nth: applied only when locator key space matches role:name key space (excluding STRUCTURAL_NOISE/TEXT_LEAF)
 
 STRUCTURAL_NOISE child-anchor path (strategy 5) detail:
@@ -319,12 +319,12 @@ All three locator-building code paths (aria-ref fast path, `get_locator_from_ref
 ```python
 scope = page
 for local_nth in frame_path:
-    scope = scope.frame_locator("iframe").nth(local_nth)
+    scope = scope.frame_locator(FRAME_ELEMENT_SELECTOR).nth(local_nth)
 ```
 
 `_iframe_local_counters: Dict[tuple, int]` (`_snapshot.py:1229`) tracks the iframe count under each parent path, ensuring per-level nth values are independent across multiple nesting levels.
 
-**Caveat — legacy `<frameset>`/`<frame>` pages are not covered**: `get_snapshot()` returns empty for a classic frameset document (a document with `<frameset>`/`<frame>` instead of `<body>`) because the single `page_snapshot_for_ai(page)` call on the main frame has no accessibility node to recurse from; each `<frame>`'s own content is fully readable via raw Playwright (`page.frame(name=...)`), just not through bridgic's snapshot/ref system. See [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md#legacy-frameset-pages-return-an-empty-snapshot).
+**Legacy `<frameset>`/`<frame>` pages**: since Playwright 1.62 the AI snapshot inlines `<frame>` content exactly like `<iframe>` content, in DOM order, so `frame_path` indexes over both. Every frame scoping step therefore uses `FRAME_ELEMENT_SELECTOR` (`"iframe, frame"`, in `_snapshot.py`) - with `"iframe"` alone, refs inside a frameset page appear in the snapshot but never resolve. Covered by `tests/integration/test_frameset.py`.
 
 ---
 

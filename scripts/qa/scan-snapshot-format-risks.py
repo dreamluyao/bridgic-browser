@@ -8,10 +8,14 @@ Python 3.10+, no bridgic install needed.
 
 What changed in Playwright's AI-mode snapshot (bridgic on Playwright 1.64.x):
 
-1. A name made only of visible child content is dropped from elements whose role
-   is not "identifying" - when the children that supplied it have refs and are
-   not plain text. Rows lose their names (their cells carry the text); a cell
-   holding a link or a textbox loses its name. A cell with only text keeps it.
+1. An element whose name was computed from its content is printed WITHOUT a name
+   when the elements that make up that name are printed beneath it (they have
+   refs and are not plain text). The name stays on those children. Any role can
+   be affected except "identifying" ones (table, group, dialog, ...): rows, a
+   cell holding a link, an icon link/button named by its <img>/<svg>
+   (``link`` > ``img "PDF Image"``), a link wrapping a button, a menuitem
+   wrapping a link. Elements named by their own text, a label, aria-label or
+   title keep their names.
 2. A generic child that only repeats its parent's name is removed
    (``button "Save"`` no longer has ``generic: Save`` under it; a <legend> no
    longer appears under its ``group``).
@@ -23,10 +27,10 @@ The scanner reads the project's Python files and, when present, its saved
 bridgic snapshots (any .txt containing ``[ref=``, e.g. ``.bridgic/explore/``) to
 predict which of the names and refs the code uses are affected:
 
-  HIGH    a hard-coded ref or a name the code matches that is predicted to change
-  MEDIUM  a pattern on a container/generic/text role that could not be checked
-          against a saved snapshot, or that rule (2)/(3) may affect
-  INFO    hard-coded refs on control roles - unchanged in our comparisons
+  HIGH    a hard-coded ref or a `- role "name"` literal predicted to change
+  MEDIUM  a ref or literal that could not be checked against a saved snapshot,
+          or a pattern rules (2)/(3) may affect
+  INFO    checked against a saved snapshot and predicted unchanged
 
 Predictions use the saved snapshots' structure, so they are approximations of
 Playwright's rules. Confirm with one verification run of each automation on the
@@ -50,28 +54,26 @@ IDENTIFYING_ROLES = frozenset({
     "listbox", "menu", "menubar", "radiogroup", "tablist", "tabpanel", "toolbar", "tree",
     "treegrid", "table", "columnheader", "rowheader",
 })
-CONTROL_ROLES = frozenset({
-    "button", "link", "textbox", "searchbox", "checkbox", "radio", "combobox", "option",
-    "switch", "slider", "spinbutton", "tab", "menuitem", "menuitemcheckbox",
-    "menuitemradio", "treeitem",
-})
 # ARIA never computes these roles' names from their content (label / aria-label
 # only), so rule (1) cannot apply to them.
 NO_NAME_FROM_CONTENT = frozenset({
     "combobox", "textbox", "searchbox", "slider", "spinbutton", "list", "img", "progressbar",
 })
-# Roles whose names typically come from content and may be dropped by rule (1).
-CONTAINER_ROLES = frozenset({"row", "cell", "gridcell", "listitem", "heading", "paragraph", "tooltip"})
+# Roles that can take their name from content, so rule (1) can drop it.
+NAME_FROM_CONTENT_ROLES = frozenset({
+    "button", "link", "cell", "gridcell", "row", "checkbox", "radio", "switch", "option",
+    "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "treeitem", "heading",
+    "tooltip", "listitem", "paragraph",
+})
 
 SKIP_DIRS = {".venv", "venv", "node_modules", ".git", "__pycache__", "site-packages"}
 
 SNAP_LINE = re.compile(r'^(?P<indent>\s*)- (?P<role>[a-z]+)(?: "(?P<name>(?:[^"\\]|\\.)*)")?(?P<rest>.*)$')
 REF_IN_LINE = re.compile(r"\[ref=(?P<ref>[0-9a-f]{8})\]")
 HEX_REF_LITERAL = re.compile(r"""["'](?P<ref>[0-9a-f]{8})["']""")
-# `- row "Name"` / `- cell "Page ` / `- gridcell(?: "` inside a string or regex.
-CODE_ROLE_PATTERN = re.compile(r"""-\s(?P<role>row|cell|gridcell|listitem|heading|paragraph|generic|img|text)\b(?P<after>[^\n]{0,60})""")
-# role="row" / role='cell' keyword arguments, and ROLE = "row" constants.
-CODE_ROLE_KW = re.compile(r"""role\w*\s*[=:,]\s*["'](?P<role>row|cell|gridcell|listitem|generic)["']""", re.IGNORECASE)
+# `- link "Name"` / `- cell "Page ` / `- row(?: "` inside a string or regex.
+_PATTERN_ROLES = "|".join(sorted(NAME_FROM_CONTENT_ROLES | {"generic", "img", "text"}))
+CODE_ROLE_PATTERN = re.compile(r"-\s(?P<role>" + _PATTERN_ROLES + r")\b(?P<after>[^\n]{0,60})")
 
 
 @dataclass
@@ -192,12 +194,10 @@ def scan(project: pathlib.Path, snapshot_paths: List[pathlib.Path]) -> List[Find
                     continue
                 if node is None:
                     findings.append(Finding("MEDIUM", where, f"hard-coded ref {ref}: not in any saved snapshot, role unknown - verify it still resolves"))
-                elif node.role in CONTROL_ROLES:
-                    findings.append(Finding("INFO", where, f"hard-coded ref {ref} = {node.role} \"{node.name}\" (control role; unchanged in comparisons)"))
                 elif _name_predicted_dropped(node):
-                    findings.append(Finding("HIGH", where, f"hard-coded ref {ref} = {node.role} \"{node.name}\": name predicted dropped, so this ref changes ({node.source}:{node.line_no})"))
+                    findings.append(Finding("HIGH", where, f"hard-coded ref {ref} = {node.role} \"{node.name}\": name predicted dropped (printed by its children), so this ref changes ({node.source}:{node.line_no})"))
                 else:
-                    findings.append(Finding("MEDIUM", where, f"hard-coded ref {ref} = {node.role} \"{node.name}\" (non-control role; check it after upgrading)"))
+                    findings.append(Finding("INFO", where, f"hard-coded ref {ref} = {node.role} \"{node.name}\": name not built from printed children - predicted unchanged"))
 
             # Snapshot-text patterns on affected roles.
             for m in CODE_ROLE_PATTERN.finditer(line):
@@ -215,8 +215,17 @@ def scan(project: pathlib.Path, snapshot_paths: List[pathlib.Path]) -> List[Find
                 if not literal:
                     if '(?: "' in after or '(?:"' in after:
                         findings.append(Finding("INFO", where, f"matches `- {role}` with an optional name - already tolerant of the name being dropped"))
+                        continue
+                    # A pattern that captures any name: check every saved line of the role.
+                    same_role = [n for n in snaps if n.role == role and n.name]
+                    dropped = [n for n in same_role if _name_predicted_dropped(n)]
+                    if dropped:
+                        d = dropped[0]
+                        findings.append(Finding("HIGH", where, f"matches `- {role} \"...\"` lines: {len(dropped)} of {len(same_role)} saved {role} lines are predicted to print no name, e.g. {role} \"{d.name}\" ({d.source}:{d.line_no}) - match the name as optional and read it from the children"))
+                    elif same_role:
+                        findings.append(Finding("INFO", where, f"matches `- {role} \"...\"` lines: all {len(same_role)} saved {role} lines keep their names"))
                     else:
-                        findings.append(Finding("MEDIUM", where, f"matches a `- {role} \"...\"` name: {role} names can be dropped when the content is in child elements"))
+                        findings.append(Finding("MEDIUM", where, f"matches a `- {role} \"...\"` name: no saved {role} line to check - the name is dropped when its children print it"))
                     continue
                 prefix = literal.group(1)
                 matches = [n for n in snaps if n.role == role and n.name.startswith(prefix)]
@@ -224,12 +233,9 @@ def scan(project: pathlib.Path, snapshot_paths: List[pathlib.Path]) -> List[Find
                     findings.append(Finding("MEDIUM", where, f"matches `- {role} \"{prefix}...\"`: no saved snapshot line to check against"))
                 elif any(_name_predicted_dropped(n) for n in matches):
                     sample = next(n for n in matches if _name_predicted_dropped(n))
-                    findings.append(Finding("HIGH", where, f"matches `- {role} \"{prefix}...\"`: that name is predicted dropped - its children carry refs ({sample.source}:{sample.line_no}). Read the child elements instead"))
+                    findings.append(Finding("HIGH", where, f"matches `- {role} \"{prefix}...\"`: that name is predicted dropped - its children print it ({sample.source}:{sample.line_no}). Read the children instead"))
                 else:
-                    findings.append(Finding("INFO", where, f"matches `- {role} \"{prefix}...\"`: name predicted kept (text-only content)"))
-
-            for m in CODE_ROLE_KW.finditer(line):
-                findings.append(Finding("MEDIUM", where, f"targets role \"{m.group('role').lower()}\" by name: that name may be dropped (rows always are)"))
+                    findings.append(Finding("INFO", where, f"matches `- {role} \"{prefix}...\"`: name predicted kept"))
 
     return findings
 
